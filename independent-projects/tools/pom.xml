@@ -27,7 +27,7 @@
         <!-- These properties are used by CreateProjectMojo to add the Maven Wrapper -->
         <proposed-maven-version>3.6.3</proposed-maven-version>
         <maven-wrapper.version>0.7.7</maven-wrapper.version>
-        <gradle-wrapper.version>6.3</gradle-wrapper.version>
+        <gradle-wrapper.version>6.5</gradle-wrapper.version>
 
         <!-- These properties are needed in order for them to be resolvable by the generated projects -->
         <!-- Quarkus uses jboss-parent and it comes with 3.8.0-jboss-2, we don't want that in the templates -->
@@ -37,28 +37,34 @@
         <scala-plugin.version>4.1.1</scala-plugin.version>
 
         <!-- Versions -->
-        <assertj.version>3.16.0</assertj.version>
+        <assertj.version>3.16.1</assertj.version>
         <eclipse-minimal-json.version>0.9.5</eclipse-minimal-json.version>
         <jackson.version>2.10.4</jackson.version>
         <jakarta.enterprise.cdi-api.version>2.0.2</jakarta.enterprise.cdi-api.version>
         <jakarta.servlet-api.version>4.0.3</jakarta.servlet-api.version>
         <jakarta.websocket-api.version>1.1.2</jakarta.websocket-api.version>
         <junit.version>5.6.1</junit.version>
+        <commons-compress.version>1.20</commons-compress.version>
         <jboss-logging.version>3.3.2.Final</jboss-logging.version>
         <maven-core.version>3.6.3</maven-core.version>
         <mockito.version>3.3.3</mockito.version>
         <nexus-staging-maven-plugin.version>1.6.8</nexus-staging-maven-plugin.version>
         <quarkus.version>999-SNAPSHOT</quarkus.version>
-        <quarkus-http.version>3.0.7.Final</quarkus-http.version>
+        <quarkus-http.version>3.0.11.Final</quarkus-http.version>
     </properties>
     <modules>
         <module>platform-descriptor-api</module>
-        <module>common</module>
+        <module>devtools-common</module>
         <module>utilities</module>
         <module>platform-descriptor-resolver-json</module>
     </modules>
     <dependencyManagement>
         <dependencies>
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-compress</artifactId>
+                <version>${commons-compress.version}</version>
+            </dependency>
             <dependency>
                 <groupId>com.eclipsesource.minimal-json</groupId>
                 <artifactId>minimal-json</artifactId>
@@ -66,7 +72,7 @@
             </dependency>
             <dependency>
                 <groupId>io.quarkus</groupId>
-                <artifactId>quarkus-bootstrap-core</artifactId>
+                <artifactId>quarkus-bootstrap-maven-resolver</artifactId>
                 <version>${quarkus.version}</version>
             </dependency>
             <dependency>
@@ -145,6 +151,13 @@
                 <artifactId>junit-jupiter</artifactId>
                 <version>${junit.version}</version>
                 <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-bootstrap-core</artifactId>
+                <type>test-jar</type>
+                <scope>test</scope>
+                <version>${quarkus.version}</version>
             </dependency>
             <!-- Jackson dependencies, imported as a BOM -->
             <dependency>
@@ -269,6 +282,7 @@
                   </dependencies>
                 <configuration>
                     <configFile>eclipse-format.xml</configFile>
+                    <lineEnding>LF</lineEnding>
                     <skip>${format.skip}</skip>
                 </configuration>
             </plugin>

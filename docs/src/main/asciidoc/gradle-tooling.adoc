@@ -302,8 +302,24 @@ A native executable will be present in `build/`.
 ====
 The `buildNative` task has been deprecated in favor of
 `build -Dquarkus.package.type=native`.
-Native related properties can either be added in `application.properties` file or as command line arguments.
 ====
+
+Native related properties can either be added in `application.properties` file, as command line arguments or in the `quarkusBuild` task.
+Configuring the `quarkusBuild` task can be done as following:
+
+[source,groovy]
+----
+quarkusBuild {
+    nativeArgs {
+        containerBuild = true <1>
+        buildImage = "quay.io/quarkus/ubi-quarkus-native-image:19.3.1-java11" <2>
+    }
+}
+----
+
+<1> Set `quarkus.native.containerBuild` property to `true`
+<2> Set `quarkus.native.buildImage` property to `quay.io/quarkus/ubi-quarkus-native-image:19.3.1-java11`
+
 
 === Build a container friendly executable
 
@@ -358,6 +374,18 @@ When building an Uber-Jar you can specify entries that you want to exclude from 
 ----
 
 The entries are relative to the root of the generated Uber-Jar. You can specify multiple entries by adding extra `--ignored-entry` arguments.
+
+[[multi-module-gradle]]
+=== Working with multi-module projects
+
+By default, Quarkus will not discover CDI beans inside another module.
+
+The best way to enable CDI bean discovery for a module in a multi-module project would be to include a `META-INF/beans.xml` file,
+unless it is the main application module already configured with the quarkus-maven-plugin, in which case it will indexed automatically.
+
+Alternatively, there is some unofficial link:https://plugins.gradle.org/search?term=jandex[Gradle Jandex plugins]) that can be used instead of the `META-INF/beans.xml` file.
+
+More information on this topic can be found on the link:cdi-reference#bean_discovery[Bean Discovery] section of the CDI guide.
 
 == Building with `./gradlew build`
 

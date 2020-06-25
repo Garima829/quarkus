@@ -23,12 +23,27 @@ public class RequestLineAttribute implements ExchangeAttribute {
                 .append(exchange.request().method())
                 .append(' ')
                 .append(exchange.request().uri());
-        if (exchange.request().query() != null) {
-            sb.append('?');
-            sb.append(exchange.request().query());
+        sb.append(' ');
+        String httpVersion = "-";
+        switch (exchange.request().version()) {
+            case HTTP_1_0:
+                httpVersion = "HTTP/1.0";
+                break;
+            case HTTP_1_1:
+                httpVersion = "HTTP/1.1";
+                break;
+            case HTTP_2:
+                httpVersion = "HTTP/2";
+                break;
+            default:
+                // best effort to try and infer the HTTP version from
+                // any "unknown" enum value
+                httpVersion = exchange.request().version().name()
+                        .replace("HTTP_", "HTTP/")
+                        .replace("_", ".");
+                break;
         }
-        sb.append(' ')
-                .append(exchange.request().version());
+        sb.append(httpVersion);
         return sb.toString();
     }
 

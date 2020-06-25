@@ -1,21 +1,6 @@
 package io.quarkus.kubernetes.deployment;
 
 import static io.quarkus.kubernetes.deployment.Constants.*;
-import static io.quarkus.kubernetes.deployment.Constants.DEFAULT_HTTP_PORT;
-import static io.quarkus.kubernetes.deployment.Constants.DEFAULT_S2I_IMAGE_NAME;
-import static io.quarkus.kubernetes.deployment.Constants.DEPLOYMENT;
-import static io.quarkus.kubernetes.deployment.Constants.DEPLOYMENT_CONFIG;
-import static io.quarkus.kubernetes.deployment.Constants.HTTP_PORT;
-import static io.quarkus.kubernetes.deployment.Constants.KNATIVE;
-import static io.quarkus.kubernetes.deployment.Constants.KUBERNETES;
-import static io.quarkus.kubernetes.deployment.Constants.MINIKUBE;
-import static io.quarkus.kubernetes.deployment.Constants.OPENSHIFT;
-import static io.quarkus.kubernetes.deployment.Constants.OPENSHIFT_APP_RUNTIME;
-import static io.quarkus.kubernetes.deployment.Constants.QUARKUS;
-import static io.quarkus.kubernetes.deployment.Constants.QUARKUS_ANNOTATIONS_BUILD_TIMESTAMP;
-import static io.quarkus.kubernetes.deployment.Constants.QUARKUS_ANNOTATIONS_COMMIT_ID;
-import static io.quarkus.kubernetes.deployment.Constants.QUARKUS_ANNOTATIONS_VCS_URL;
-import static io.quarkus.kubernetes.deployment.Constants.SERVICE;
 import static io.quarkus.kubernetes.spi.KubernetesDeploymentTargetBuildItem.*;
 
 import java.io.File;
@@ -28,21 +13,13 @@ import java.security.MessageDigest;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 import org.jboss.logging.Logger;
 
 import io.dekorate.Session;
+import io.dekorate.SessionReader;
 import io.dekorate.SessionWriter;
 import io.dekorate.kubernetes.annotation.ImagePullPolicy;
 import io.dekorate.kubernetes.annotation.ServiceType;
@@ -51,29 +28,8 @@ import io.dekorate.kubernetes.config.EnvBuilder;
 import io.dekorate.kubernetes.config.Label;
 import io.dekorate.kubernetes.config.PortBuilder;
 import io.dekorate.kubernetes.configurator.AddPort;
-import io.dekorate.kubernetes.decorator.AddAnnotationDecorator;
-import io.dekorate.kubernetes.decorator.AddAwsElasticBlockStoreVolumeDecorator;
-import io.dekorate.kubernetes.decorator.AddAzureDiskVolumeDecorator;
-import io.dekorate.kubernetes.decorator.AddAzureFileVolumeDecorator;
-import io.dekorate.kubernetes.decorator.AddConfigMapVolumeDecorator;
-import io.dekorate.kubernetes.decorator.AddEnvVarDecorator;
-import io.dekorate.kubernetes.decorator.AddImagePullSecretDecorator;
-import io.dekorate.kubernetes.decorator.AddInitContainerDecorator;
-import io.dekorate.kubernetes.decorator.AddLabelDecorator;
-import io.dekorate.kubernetes.decorator.AddLivenessProbeDecorator;
-import io.dekorate.kubernetes.decorator.AddMountDecorator;
-import io.dekorate.kubernetes.decorator.AddPvcVolumeDecorator;
-import io.dekorate.kubernetes.decorator.AddReadinessProbeDecorator;
-import io.dekorate.kubernetes.decorator.AddRoleBindingResourceDecorator;
-import io.dekorate.kubernetes.decorator.AddSecretVolumeDecorator;
-import io.dekorate.kubernetes.decorator.AddServiceAccountResourceDecorator;
-import io.dekorate.kubernetes.decorator.AddSidecarDecorator;
-import io.dekorate.kubernetes.decorator.ApplyArgsDecorator;
-import io.dekorate.kubernetes.decorator.ApplyCommandDecorator;
-import io.dekorate.kubernetes.decorator.ApplyImagePullPolicyDecorator;
-import io.dekorate.kubernetes.decorator.ApplyServiceAccountNamedDecorator;
-import io.dekorate.kubernetes.decorator.ApplyWorkingDirDecorator;
-import io.dekorate.kubernetes.decorator.RemoveAnnotationDecorator;
+import io.dekorate.kubernetes.decorator.*;
+import io.dekorate.processor.SimpleFileReader;
 import io.dekorate.processor.SimpleFileWriter;
 import io.dekorate.project.BuildInfo;
 import io.dekorate.project.FileProjectFactory;
@@ -89,6 +45,7 @@ import io.quarkus.container.spi.BaseImageInfoBuildItem;
 import io.quarkus.container.spi.ContainerImageInfoBuildItem;
 import io.quarkus.container.spi.ContainerImageLabelBuildItem;
 import io.quarkus.deployment.Capabilities;
+import io.quarkus.deployment.Feature;
 import io.quarkus.deployment.IsNormal;
 import io.quarkus.deployment.annotations.BuildProducer;
 import io.quarkus.deployment.annotations.BuildStep;
@@ -98,19 +55,11 @@ import io.quarkus.deployment.builditem.GeneratedFileSystemResourceBuildItem;
 import io.quarkus.deployment.pkg.PackageConfig;
 import io.quarkus.deployment.pkg.builditem.OutputTargetBuildItem;
 import io.quarkus.deployment.util.FileUtil;
-import io.quarkus.kubernetes.spi.KubernetesAnnotationBuildItem;
-import io.quarkus.kubernetes.spi.KubernetesCommandBuildItem;
-import io.quarkus.kubernetes.spi.KubernetesDeploymentTargetBuildItem;
-import io.quarkus.kubernetes.spi.KubernetesEnvBuildItem;
-import io.quarkus.kubernetes.spi.KubernetesHealthLivenessPathBuildItem;
-import io.quarkus.kubernetes.spi.KubernetesHealthReadinessPathBuildItem;
-import io.quarkus.kubernetes.spi.KubernetesLabelBuildItem;
-import io.quarkus.kubernetes.spi.KubernetesPortBuildItem;
-import io.quarkus.kubernetes.spi.KubernetesRoleBuildItem;
+import io.quarkus.kubernetes.spi.*;
 
 class KubernetesProcessor {
 
-    private static final Logger log = Logger.getLogger(KubernetesDeployer.class);
+    private static final Logger log = Logger.getLogger(KubernetesProcessor.class);
 
     private static final String OUTPUT_ARTIFACT_FORMAT = "%s%s.jar";
     public static final String DEFAULT_HASH_ALGORITHM = "SHA-256";
@@ -121,7 +70,7 @@ class KubernetesProcessor {
 
     @BuildStep
     FeatureBuildItem produceFeature() {
-        return new FeatureBuildItem(FeatureBuildItem.KUBERNETES);
+        return new FeatureBuildItem(Feature.KUBERNETES);
     }
 
     @BuildStep
@@ -248,11 +197,16 @@ class KubernetesProcessor {
 
         final Map<String, String> generatedResourcesMap;
         // by passing false to SimpleFileWriter, we ensure that no files are actually written during this phase
-        final SessionWriter sessionWriter = new SimpleFileWriter(root, false);
         Project project = createProject(applicationInfo, artifactPath);
+        final SessionWriter sessionWriter = new SimpleFileWriter(root, false);
+        final SessionReader sessionReader = new SimpleFileReader(
+                project.getRoot().resolve("src").resolve("main").resolve("kubernetes"), kubernetesDeploymentTargets
+                        .getEntriesSortedByPriority().stream()
+                        .map(EnabledKubernetesDeploymentTargetsBuildItem.Entry::getName).collect(Collectors.toSet()));
         sessionWriter.setProject(project);
-        final Session session = Session.getSession();
+        final Session session = Session.getSession(new io.dekorate.logger.NoopLogger());
         session.setWriter(sessionWriter);
+        session.setReader(sessionReader);
 
         session.feed(Maps.fromProperties(config));
 
@@ -293,6 +247,7 @@ class KubernetesProcessor {
         // write the generated resources to the filesystem
         generatedResourcesMap = session.close();
 
+        List<String> generatedFileNames = new ArrayList<>(generatedResourcesMap.size());
         for (Map.Entry<String, String> resourceEntry : generatedResourcesMap.entrySet()) {
             String fileName = resourceEntry.getKey().replace(root.toAbsolutePath().toString(), "");
             String relativePath = resourceEntry.getKey().replace(root.toAbsolutePath().toString(), KUBERNETES);
@@ -308,11 +263,17 @@ class KubernetesProcessor {
                 }
             }
 
+            generatedFileNames.add(fileName.replace("/", ""));
             generatedResourceProducer.produce(
                     new GeneratedFileSystemResourceBuildItem(
                             // we need to make sure we are only passing the relative path to the build item
                             relativePath,
                             resourceEntry.getValue().getBytes(StandardCharsets.UTF_8)));
+        }
+
+        if (!generatedFileNames.isEmpty()) {
+            log.infof("Generated the Kubernetes manifests: '%s' in '%s'", String.join(",", generatedFileNames),
+                    outputTarget.getOutputDirectory() + File.separator + KUBERNETES);
         }
 
         try {
@@ -341,7 +302,7 @@ class KubernetesProcessor {
 
     /**
      * Apply changes to the target resource group
-     * 
+     *
      * @param session The session to apply the changes
      * @param target The deployment target (e.g. kubernetes, openshift, knative)
      * @param name The name of the resource to accept the configuration
@@ -356,16 +317,21 @@ class KubernetesProcessor {
         }
 
         ScmInfo scm = project.getScmInfo();
-        String vcsUrl = scm != null ? scm.getUrl() : Annotations.UNKNOWN;
-        String commitId = scm != null ? scm.getCommit() : Annotations.UNKNOWN;
+        String vcsUrl = scm != null ? scm.getUrl() : null;
+        String commitId = scm != null ? scm.getCommit() : null;
 
         //Dekorate uses its own annotations. Let's replace them with the quarkus ones.
         session.resources().decorate(target, new RemoveAnnotationDecorator(Annotations.VCS_URL));
         session.resources().decorate(target, new RemoveAnnotationDecorator(Annotations.COMMIT_ID));
         //Add quarkus vcs annotations
-        session.resources().decorate(target,
-                new AddAnnotationDecorator(new Annotation(QUARKUS_ANNOTATIONS_COMMIT_ID, commitId)));
-        session.resources().decorate(target, new AddAnnotationDecorator(new Annotation(QUARKUS_ANNOTATIONS_VCS_URL, vcsUrl)));
+        if (commitId != null) {
+            session.resources().decorate(target,
+                    new AddAnnotationDecorator(new Annotation(QUARKUS_ANNOTATIONS_COMMIT_ID, commitId)));
+        }
+        if (vcsUrl != null) {
+            session.resources().decorate(target,
+                    new AddAnnotationDecorator(new Annotation(QUARKUS_ANNOTATIONS_VCS_URL, vcsUrl)));
+        }
 
         if (config.isAddBuildTimestamp()) {
             session.resources().decorate(target, new AddAnnotationDecorator(new Annotation(QUARKUS_ANNOTATIONS_BUILD_TIMESTAMP,
@@ -431,6 +397,13 @@ class KubernetesProcessor {
         config.getContainers().entrySet().forEach(e -> {
             session.resources().decorate(target, new AddSidecarDecorator(name, ContainerConverter.convert(e)));
         });
+
+        // The presence of optional is causing issues in OCP 3.11, so we better remove them.
+        // The following 4 decorator will set the optional property to null, so that it won't make it into the file.
+        session.resources().decorate(target, new RemoveOptionalFromSecretEnvSourceDecorator());
+        session.resources().decorate(target, new RemoveOptionalFromConfigMapEnvSourceDecorator());
+        session.resources().decorate(target, new RemoveOptionalFromSecretKeySelectorDecorator());
+        session.resources().decorate(target, new RemoveOptionalFromConfigMapKeySelectorDecorator());
     }
 
     /**
@@ -491,8 +464,15 @@ class KubernetesProcessor {
         configMap.put(KNATIVE, knativeConfig);
 
         //Replicas
-        session.resources().decorate(new KubernetesApplyReplicasDecorator(kubernetesName, kubernetesConfig.getReplicas()));
-        session.resources().decorate(new OpenshiftApplyReplicasDecorator(openshiftConfig.getReplicas()));
+        if (kubernetesConfig.getReplicas() != 1) {
+            session.resources().decorate(new io.dekorate.kubernetes.decorator.ApplyReplicasDecorator(kubernetesName,
+                    kubernetesConfig.getReplicas()));
+        }
+        if (openshiftConfig.getReplicas() != 1) {
+            session.resources()
+                    .decorate(new io.dekorate.openshift.decorator.ApplyReplicasDecorator(openshiftName,
+                            openshiftConfig.getReplicas()));
+        }
 
         kubernetesAnnotations.forEach(a -> {
             session.resources().decorate(a.getTarget(), new AddAnnotationDecorator(new Annotation(a.getKey(), a.getValue())));
@@ -510,26 +490,13 @@ class KubernetesProcessor {
         });
 
         kubernetesEnvs.forEach(e -> {
-            final String value = e.getValue();
-            final EnvBuilder envBuilder = new EnvBuilder()
-                    .withValue(value);
-            switch (e.getType()) {
-                case var:
-                    envBuilder.withName(EnvConverter.convertName(e.getName()));
-                    break;
-                case field:
-                    // env vars from fields need to have their name set in addition to their field field :)
-                    final String name = EnvConverter.convertName(e.getName());
-                    envBuilder.withField(value).withName(name);
-                    break;
-                case secret:
-                    envBuilder.withSecret(value);
-                    break;
-                case configmap:
-                    envBuilder.withConfigmap(value);
-                    break;
-            }
-            session.resources().decorate(e.getTarget(), new AddEnvVarDecorator(envBuilder.build()));
+            session.resources().decorate(e.getTarget(), new AddEnvVarDecorator(new EnvBuilder()
+                    .withName(EnvConverter.convertName(e.getName()))
+                    .withValue(e.getValue())
+                    .withSecret(e.getSecret())
+                    .withConfigmap(e.getConfigMap())
+                    .withField(e.getField())
+                    .build()));
         });
 
         //Handle Command and arguments
@@ -716,9 +683,9 @@ class KubernetesProcessor {
         Project project = FileProjectFactory.create(artifactPath.toFile());
         BuildInfo buildInfo = new BuildInfo(app.getName(), app.getVersion(),
                 "jar", project.getBuildInfo().getBuildTool(),
+                artifactPath.toAbsolutePath().toString(),
                 artifactPath,
-                project.getBuildInfo().getOutputFile(),
-                project.getBuildInfo().getClassOutputDir());
+                project.getBuildInfo().getResourceDir());
 
         return new Project(project.getRoot(), buildInfo, project.getScmInfo());
     }

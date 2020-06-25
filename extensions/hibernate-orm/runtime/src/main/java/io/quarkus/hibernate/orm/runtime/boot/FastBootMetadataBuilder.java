@@ -31,6 +31,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import javax.persistence.PersistenceException;
 import javax.persistence.spi.PersistenceUnitTransactionType;
 
+import org.hibernate.MultiTenancyStrategy;
 import org.hibernate.boot.CacheRegionDefinition;
 import org.hibernate.boot.MetadataBuilder;
 import org.hibernate.boot.MetadataSources;
@@ -40,10 +41,9 @@ import org.hibernate.boot.internal.MetadataImpl;
 import org.hibernate.boot.model.process.spi.ManagedResources;
 import org.hibernate.boot.model.process.spi.MetadataBuildingProcess;
 import org.hibernate.boot.registry.BootstrapServiceRegistry;
-import org.hibernate.boot.registry.BootstrapServiceRegistryBuilder;
 import org.hibernate.boot.registry.StandardServiceRegistry;
-import org.hibernate.boot.registry.StandardServiceRegistryBuilder;
 import org.hibernate.boot.registry.classloading.spi.ClassLoaderService;
+import org.hibernate.boot.registry.internal.BootstrapServiceRegistryImpl;
 import org.hibernate.boot.registry.selector.spi.StrategySelector;
 import org.hibernate.boot.spi.MetadataBuilderContributor;
 import org.hibernate.boot.spi.MetadataBuilderImplementor;
@@ -52,6 +52,7 @@ import org.hibernate.cache.internal.CollectionCacheInvalidator;
 import org.hibernate.cfg.AvailableSettings;
 import org.hibernate.cfg.beanvalidation.BeanValidationIntegrator;
 import org.hibernate.dialect.Dialect;
+import org.hibernate.engine.jdbc.connections.spi.MultiTenantConnectionProvider;
 import org.hibernate.engine.jdbc.dialect.spi.DialectFactory;
 import org.hibernate.engine.transaction.jta.platform.spi.JtaPlatform;
 import org.hibernate.id.factory.spi.MutableIdentifierGeneratorFactory;
@@ -74,7 +75,9 @@ import org.infinispan.quarkus.hibernate.cache.QuarkusInfinispanRegionFactory;
 
 import io.quarkus.hibernate.orm.runtime.BuildTimeSettings;
 import io.quarkus.hibernate.orm.runtime.IntegrationSettings;
-import io.quarkus.hibernate.orm.runtime.customized.QuarkusJtaPlatform;
+import io.quarkus.hibernate.orm.runtime.customized.QuarkusIntegratorServiceImpl;
+import io.quarkus.hibernate.orm.runtime.customized.QuarkusJtaPlatformInitiator;
+import io.quarkus.hibernate.orm.runtime.customized.QuarkusStrategySelectorBuilder;
 import io.quarkus.hibernate.orm.runtime.integration.HibernateOrmIntegrations;
 import io.quarkus.hibernate.orm.runtime.proxies.PreGeneratedProxies;
 import io.quarkus.hibernate.orm.runtime.proxies.ProxyDefinitions;
@@ -83,6 +86,7 @@ import io.quarkus.hibernate.orm.runtime.recording.RecordableBootstrap;
 import io.quarkus.hibernate.orm.runtime.recording.RecordedState;
 import io.quarkus.hibernate.orm.runtime.recording.RecordingDialectFactory;
 import io.quarkus.hibernate.orm.runtime.service.FlatClassLoaderService;
+import io.quarkus.hibernate.orm.runtime.tenant.HibernateMultiTenantConnectionProvider;
 
 /**
  * Alternative to EntityManagerFactoryBuilderImpl so to have full control of how MetadataBuilderImplementor
@@ -101,13 +105,19 @@ public class FastBootMetadataBuilder {
     private final Collection<Class<? extends Integrator>> additionalIntegrators;
     private final Collection<ProvidedService> providedServices;
     private final PreGeneratedProxies preGeneratedProxies;
+    private final MultiTenancyStrategy multiTenancyStrategy;
+
+    //JTA is currently required for regular Hibernate ORM, but it's not for Hibernate Reactive.
+    private final boolean jtaPresent;
 
     @SuppressWarnings("unchecked")
     public FastBootMetadataBuilder(final PersistenceUnitDescriptor persistenceUnit, Scanner scanner,
-            Collection<Class<? extends Integrator>> additionalIntegrators, PreGeneratedProxies preGeneratedProxies) {
+            Collection<Class<? extends Integrator>> additionalIntegrators, PreGeneratedProxies preGeneratedProxies,
+            MultiTenancyStrategy strategy, boolean jtaPresent) {
         this.persistenceUnit = persistenceUnit;
         this.additionalIntegrators = additionalIntegrators;
         this.preGeneratedProxies = preGeneratedProxies;
+        this.jtaPresent = jtaPresent;
         final ClassLoaderService providedClassLoaderService = FlatClassLoaderService.INSTANCE;
 
         // Copying semantics from: new EntityManagerFactoryBuilderImpl( unit,
@@ -122,7 +132,7 @@ public class FastBootMetadataBuilder {
         final BootstrapServiceRegistry bsr = buildBootstrapServiceRegistry(providedClassLoaderService);
 
         // merge configuration sources and build the "standard" service registry
-        final RecordableBootstrap ssrBuilder = new RecordableBootstrap(bsr);
+        final RecordableBootstrap ssrBuilder = new RecordableBootstrap(bsr, jtaPresent);
 
         final MergedSettings mergedSettings = mergeSettings(persistenceUnit);
         this.buildTimeSettings = new BuildTimeSettings(mergedSettings.getConfigurationValues());
@@ -183,6 +193,12 @@ public class FastBootMetadataBuilder {
         // for the time being we want to revoke access to the temp ClassLoader if one
         // was passed
         metamodelBuilder.applyTempClassLoader(null);
+
+        if (strategy != null && strategy != MultiTenancyStrategy.NONE) {
+            ssrBuilder.addService(MultiTenantConnectionProvider.class, new HibernateMultiTenantConnectionProvider());
+        }
+        this.multiTenancyStrategy = strategy;
+
     }
 
     private void addPUManagedClassNamesToMetadataSources(PersistenceUnitDescriptor persistenceUnit,
@@ -194,18 +210,13 @@ public class FastBootMetadataBuilder {
 
     private BootstrapServiceRegistry buildBootstrapServiceRegistry(ClassLoaderService providedClassLoaderService) {
 
-        final BootstrapServiceRegistryBuilder bsrBuilder = new BootstrapServiceRegistryBuilder();
-
         // N.B. support for custom IntegratorProvider injected via Properties (as
         // instance) removed
 
-        // N.B. support for custom StrategySelector removed
-        // TODO see to inject a custom
-        // org.hibernate.boot.registry.selector.spi.StrategySelector ?
-
-        bsrBuilder.applyClassLoaderService(providedClassLoaderService);
-
-        return bsrBuilder.build();
+        final QuarkusIntegratorServiceImpl integratorService = new QuarkusIntegratorServiceImpl(providedClassLoaderService);
+        final QuarkusStrategySelectorBuilder strategySelectorBuilder = new QuarkusStrategySelectorBuilder();
+        final StrategySelector strategySelector = strategySelectorBuilder.buildSelector(providedClassLoaderService);
+        return new BootstrapServiceRegistryImpl(true, providedClassLoaderService, strategySelector, integratorService);
     }
 
     /**
@@ -273,8 +284,8 @@ public class FastBootMetadataBuilder {
         // Note: this one is not a boolean, just having the property enables it
         if (cfg.containsKey(JACC_ENABLED)) {
             LOG.warn("JACC is not supported. Disabling it.");
+            cfg.remove(JACC_ENABLED);
         }
-        cfg.remove(JACC_ENABLED);
 
         // here we are going to iterate the merged config settings looking for:
         // 1) additional JACC permissions
@@ -335,7 +346,7 @@ public class FastBootMetadataBuilder {
         destroyServiceRegistry(fullMeta);
         ProxyDefinitions proxyClassDefinitions = ProxyDefinitions.createFromMetadata(storeableMetadata, preGeneratedProxies);
         return new RecordedState(dialect, jtaPlatform, storeableMetadata, buildTimeSettings, getIntegrators(),
-                providedServices, integrationSettingsBuilder.build(), proxyClassDefinitions);
+                providedServices, integrationSettingsBuilder.build(), proxyClassDefinitions, multiTenancyStrategy, jtaPresent);
     }
 
     private void destroyServiceRegistry(MetadataImplementor fullMeta) {
@@ -372,7 +383,8 @@ public class FastBootMetadataBuilder {
     }
 
     private JtaPlatform extractJtaPlatform() {
-        return QuarkusJtaPlatform.INSTANCE;
+        final QuarkusJtaPlatformInitiator quarkusJtaPlatformInitiator = new QuarkusJtaPlatformInitiator(jtaPresent);
+        return quarkusJtaPlatformInitiator.buildJtaPlatformInstance();
     }
 
     private Dialect extractDialect() {

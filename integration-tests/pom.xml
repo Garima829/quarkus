@@ -28,6 +28,7 @@
         <module>common-jpa-entities</module>
         <module>infinispan-client</module>
         <module>infinispan-embedded</module>
+        <module>gradle</module>
         <module>main</module>
         <module>kafka</module>
         <module>kafka-streams</module>
@@ -42,8 +43,13 @@
         <module>jpa-mssql</module>
         <module>jpa-mysql</module>
         <module>hibernate-orm-panache</module>
-        <module>panache-rest-hibernate-orm</module>
+        <module>hibernate-orm-rest-data-panache</module>
+        <module>hibernate-orm-panache-kotlin</module>
+        <module>hibernate-reactive-db2</module>
+        <module>hibernate-reactive-mysql</module>
+        <module>hibernate-reactive-postgresql</module>
         <module>hibernate-search-elasticsearch</module>
+        <module>hibernate-tenancy</module>
         <module>vertx-http</module>
         <module>vertx</module>
         <module>spring-di</module>
@@ -62,6 +68,7 @@
         <module>oidc-code-flow</module>
         <module>oidc-tenancy</module>
         <module>keycloak-authorization</module>
+        <module>reactive-db2-client</module>
         <module>reactive-pg-client</module>
         <module>reactive-mysql-client</module>
         <module>amazon-services</module>
@@ -71,8 +78,6 @@
         <module>amazon-lambda-http</module>
         <module>amazon-lambda-http-resteasy</module>
         <module>container-image</module>
-        <module>optaplanner-jackson</module>
-        <module>optaplanner-jsonb</module>
         <module>kubernetes</module>
         <module>kubernetes-client</module>
         <module>tika</module>
@@ -97,6 +102,8 @@
         <module>elytron-security-jdbc</module>
         <module>elytron-security-ldap</module>
         <module>vertx-graphql</module>
+        <module>smallrye-context-propagation</module>
+        <module>smallrye-graphql</module>
         <module>jpa-without-entity</module>
         <module>quartz</module>
         <module>logging-gelf</module>
@@ -108,6 +115,23 @@
         <module>rest-client</module>
         <module>packaging</module>
         <module>simple with space</module>
+        <module>consul-config</module>
+        <module>picocli</module>
+        <module>picocli-native</module>
+        <module>webjars-locator</module>
+        <module>devmode</module>
+        <module>ide-launcher</module>
+
+        <!-- gRPC tests -->
+        <module>grpc-plain-text</module>
+        <module>grpc-tls</module>
+        <module>grpc-mutual-auth</module>
+        <module>grpc-streaming</module>
+        <module>grpc-interceptors</module>
+        <module>grpc-proto-v2</module>
+        <module>grpc-health</module>
+        <module>google-cloud-functions-http</module>
+        <module>google-cloud-functions</module>
     </modules>
 
     <build>
@@ -139,6 +163,14 @@
 
     <dependencyManagement>
         <dependencies>
+            <dependency>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-bom-test</artifactId>
+                <version>${project.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
             <dependency>
                 <groupId>io.quarkus</groupId>
                 <artifactId>quarkus-integration-test-class-transformer-deployment</artifactId>

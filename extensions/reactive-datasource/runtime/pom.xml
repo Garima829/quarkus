@@ -26,6 +26,14 @@
             <groupId>io.quarkus</groupId>
             <artifactId>quarkus-datasource</artifactId>
         </dependency>
+        <dependency>
+            <groupId>io.vertx</groupId>
+            <artifactId>vertx-sql-client</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-vertx-core</artifactId>
+        </dependency>
     </dependencies>
 
     <build>

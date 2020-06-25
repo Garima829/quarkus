@@ -27,6 +27,7 @@ import org.jboss.jandex.Type;
 import org.jboss.jandex.UnresolvedTypeVariable;
 import org.jboss.jandex.VoidType;
 
+import io.quarkus.deployment.Feature;
 import io.quarkus.deployment.annotations.BuildProducer;
 import io.quarkus.deployment.annotations.BuildStep;
 import io.quarkus.deployment.annotations.ExecutionTime;
@@ -64,7 +65,7 @@ class HibernateSearchElasticsearchProcessor {
             BuildProducer<ReflectiveHierarchyBuildItem> reflectiveHierarchy,
             BuildProducer<HibernateOrmIntegrationBuildItem> integrations,
             BuildProducer<FeatureBuildItem> feature) throws Exception {
-        feature.produce(new FeatureBuildItem(FeatureBuildItem.HIBERNATE_SEARCH_ELASTICSEARCH));
+        feature.produce(new FeatureBuildItem(Feature.HIBERNATE_SEARCH_ELASTICSEARCH));
 
         IndexView index = combinedIndexBuildItem.getIndex();
 
@@ -140,6 +141,11 @@ class HibernateSearchElasticsearchProcessor {
                     new ReflectiveClassBuildItem(true, false, buildTimeConfig.defaultBackend.analysis.configurer.get()));
         }
 
+        if (buildTimeConfig.defaultBackend.layout.strategy.isPresent()) {
+            reflectiveClass.produce(
+                    new ReflectiveClassBuildItem(true, false, buildTimeConfig.defaultBackend.layout.strategy.get()));
+        }
+
         if (buildTimeConfig.backgroundFailureHandler.isPresent()) {
             reflectiveClass.produce(
                     new ReflectiveClassBuildItem(true, false, buildTimeConfig.backgroundFailureHandler.get()));
@@ -175,13 +181,7 @@ class HibernateSearchElasticsearchProcessor {
             }
         }
 
-        for (Class<?> gsonClass : GSON_CLASSES) {
-            Class<?> currentClass = gsonClass;
-            while (currentClass != Object.class) {
-                reflectiveClassCollector.add(DotName.createSimple(currentClass.getName()));
-                currentClass = currentClass.getSuperclass();
-            }
-        }
+        reflectiveClassCollector.addAll(GSON_CLASSES);
 
         String[] reflectiveClasses = reflectiveClassCollector.stream().map(DotName::toString).toArray(String[]::new);
         reflectiveClass.produce(new ReflectiveClassBuildItem(true, true, reflectiveClasses));

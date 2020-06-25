@@ -67,7 +67,7 @@ public class NettyHttpClientConfig {
     /**
      * The maximum amount of time that a connection should be allowed to remain open while idle.
      * <p>
-     * Currently has no effect if `quarkus.dynamodb.async-client.use-idle-connection-reaper` is false.
+     * Currently has no effect if `quarkus.<amazon-service>.async-client.use-idle-connection-reaper` is false.
      */
     @ConfigItem(defaultValue = "60S")
     public Duration connectionMaxIdleTime;
@@ -75,8 +75,8 @@ public class NettyHttpClientConfig {
     /**
      * Whether the idle connections in the connection pool should be closed.
      * <p>
-     * When enabled, connections left idling for longer than `quarkus.dynamodb.async-client.connection-max-idle-time` will be
-     * closed. This will not close connections currently in use.
+     * When enabled, connections left idling for longer than `quarkus.<amazon-service>.async-client.connection-max-idle-time`
+     * will be closed. This will not close connections currently in use.
      */
     @ConfigItem(defaultValue = "true")
     public boolean useIdleConnectionReaper;
@@ -138,6 +138,16 @@ public class NettyHttpClientConfig {
          */
         @ConfigItem(defaultValueDocumentation = "1048576")
         public Optional<Integer> initialWindowSize;
+
+        /**
+         * Sets the period that the Netty client will send {@code PING} frames to the remote endpoint to check the
+         * health of the connection. To disable this feature, set a duration of 0.
+         * <p>
+         * This setting is only respected when the HTTP/2 protocol is used.
+         * <p>
+         */
+        @ConfigItem(defaultValueDocumentation = "5")
+        public Optional<Duration> healthCheckPingPeriod;
     }
 
     @ConfigGroup

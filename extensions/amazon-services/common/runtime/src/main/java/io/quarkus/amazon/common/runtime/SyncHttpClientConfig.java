@@ -25,6 +25,12 @@ public class SyncHttpClientConfig {
     public Duration socketTimeout;
 
     /**
+     * TLS Managers provider configuration
+     */
+    @ConfigItem
+    public TlsManagersProviderConfig tlsManagersProvider;
+
+    /**
      * Apache HTTP client specific configurations
      */
     @ConfigItem
@@ -68,8 +74,8 @@ public class SyncHttpClientConfig {
         /**
          * Whether the idle connections in the connection pool should be closed asynchronously.
          * <p>
-         * When enabled, connections left idling for longer than `quarkus.dynamodb.sync-client.connection-max-idle-time` will be
-         * closed.
+         * When enabled, connections left idling for longer than `quarkus.<amazon-service>.sync-client.connection-max-idle-time`
+         * will be closed.
          * This will not close connections currently in use.
          */
         @ConfigItem(defaultValue = "true")
@@ -80,12 +86,6 @@ public class SyncHttpClientConfig {
          */
         @ConfigItem
         public HttpClientProxyConfiguration proxy;
-
-        /**
-         * TLS Managers provider configuration
-         */
-        @ConfigItem
-        public TlsManagersProviderConfig tlsManagersProvider;
 
         @ConfigGroup
         public static class HttpClientProxyConfiguration {

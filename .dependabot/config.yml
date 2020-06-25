@@ -87,7 +87,7 @@ update_configs:
           dependency_name: "org.scala-lang:scala-compiler"
       - match:
           dependency_name: "net.alchim31.maven:scala-maven-plugin"
-      # Smallrye
+      # SmallRye
       - match:
           dependency_name: "io.smallrye:smallrye-jwt"
       - match:
@@ -110,6 +110,9 @@ update_configs:
           dependency_name: "io.smallrye.reactive:smallrye-reactive-messaging"
       - match:
           dependency_name: "io.smallrye.reactive:smallrye-reactive-streams-operators"
+      # Swagger-UI
+      - match:
+          dependency_name: "org.webjars:swagger-ui"
       # Tika
       - match:
           dependency_name: "org.apache.tika:tika-parsers"
@@ -125,6 +128,8 @@ update_configs:
           dependency_name: "org.junit:junit-bom"
       - match:
           dependency_name: "org.assertj:assertj-core"
+      - match:
+          dependency_name: "org.testcontainers:testcontainers-bom"
       - match:
           dependency_name: "org.testcontainers:testcontainers"
       - match:
@@ -165,8 +170,21 @@ update_configs:
           dependency_name: "com.github.tomakehurst:wiremock-jre8"
       - match:
           dependency_name: "uk.co.automatictester:wiremock-maven-plugin"
+      #Picocli
+      - match:
+          dependency_name: "info.picocli:picocli"
+      - match:
+          dependency_name: "info.picocli:picocli-codegen"
+      # Caffeine
+      - match:
+          dependency_name: "com.github.ben-manes.caffeine:caffeine"
   - package_manager: "java:gradle"
     directory: "/devtools/gradle"
+    update_schedule: "daily"
+    default_labels:
+      - "area/dependencies"
+  - package_manager: "java:gradle"
+    directory: "/integration-tests/gradle"
     update_schedule: "daily"
     default_labels:
       - "area/dependencies"

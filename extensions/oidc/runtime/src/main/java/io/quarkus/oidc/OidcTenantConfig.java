@@ -40,7 +40,7 @@ public class OidcTenantConfig {
 
     /**
      * The base URL of the OpenID Connect (OIDC) server, for example, 'https://host:port/auth'.
-     * All the other OIDC server page and service URLs are derived from this URL.
+     * OIDC discovery endpoint will be called by appending a '/.well-known/openid-configuration' path segment to this URL.
      * Note if you work with Keycloak OIDC server, make sure the base URL is in the following format:
      * 'https://host:port/auth/realms/{realm}' where '{realm}' has to be replaced by the name of the Keycloak realm.
      */
@@ -638,6 +638,12 @@ public class OidcTenantConfig {
         @ConfigItem
         public boolean refreshExpired;
 
+        /**
+         * Forced JWK set refresh interval in minutes.
+         */
+        @ConfigItem(defaultValue = "10M")
+        public Duration forcedJwkRefreshInterval = Duration.ofMinutes(10);
+
         public Optional<String> getIssuer() {
             return issuer;
         }
@@ -676,6 +682,14 @@ public class OidcTenantConfig {
 
         public void setRefreshExpired(boolean refreshExpired) {
             this.refreshExpired = refreshExpired;
+        }
+
+        public Duration getForcedJwkRefreshInterval() {
+            return forcedJwkRefreshInterval;
+        }
+
+        public void setForcedJwkRefreshInterval(Duration forcedJwkRefreshInterval) {
+            this.forcedJwkRefreshInterval = forcedJwkRefreshInterval;
         }
     }
 

@@ -47,6 +47,11 @@
       <artifactId>quarkus-vertx-web</artifactId>
       <version>${quarkus.version}</version>
     </dependency>
+    <!-- remove if not using funqy -->
+    <dependency>
+      <groupId>io.quarkus</groupId>
+      <artifactId>quarkus-funqy-http</artifactId>
+    </dependency>
     <dependency>
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-azure-functions-http</artifactId>
@@ -84,9 +89,10 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <version>${surefire-plugin.version}</version>
         <configuration>
-          <systemProperties>
+          <systemPropertyVariables>
             <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
-          </systemProperties>
+            <maven.home>${maven.home}</maven.home>
+          </systemPropertyVariables>
         </configuration>
       </plugin>
       <!-- we only use azure plugin to deploy to Azure.

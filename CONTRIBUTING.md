@@ -22,6 +22,88 @@ This project uses GitHub issues to manage the issues. Open an issue directly in 
 If you believe you found a bug, and it's likely possible, please indicate a way to reproduce it, what you are seeing and what you would expect to see.
 Don't forget to indicate your Quarkus, Java, Maven/Gradle and GraalVM version. 
 
+## Checking an issue is fixed in master
+
+Sometimes a bug has been fixed in the `master` branch of Quarkus and you want to confirm it is fixed for your own application.
+Testing the `master` branch is easy and you have two options:
+
+* either use the snapshots we publish daily on https://oss.sonatype.org/content/repositories/snapshots/
+* or build Quarkus all by yourself
+
+This is a quick summary to get you to quickly test master.
+If you are interested in having more details, refer to the [Build section](#build) and the [Usage section](#usage).
+
+### Using snapshots
+
+Snapshots are published daily so you will have to wait for a snapshot containing the commits you are interested in.
+
+Then just add https://oss.sonatype.org/content/repositories/snapshots/ as a Maven repository **and** a plugin repository.
+
+You can check the last publication date here: https://oss.sonatype.org/content/repositories/snapshots/io/quarkus/ .
+
+### Building master
+
+Just do the following:
+
+```
+git clone git@github.com:quarkusio/quarkus.git
+cd quarkus
+export MAVEN_OPTS="-Xmx1563m"
+./mvnw clean install -DskipTests -DskipITs -DskipDocs
+```
+
+Wait for a bit and you're done.
+
+#### Workflow tips
+
+Due to Quarkus being a large repository, having to rebuild the entire project every time a change is made isn't very productive. 
+The following Maven tips can vastly speed up development when working on a specific extension.
+
+##### Building all modules of an extension
+
+Let's say you want to make changes to the `Jackson` extension. This extension contains the `deployment`, `runtime` and `spi` modules
+which can all be built by executing following command:
+
+``` 
+./mvnw install -f extensions/jackson/
+```     
+
+This command uses the path of the extension on the filesystem to identify it. Moreover, Maven will automatically build all modules in that path recursively.
+
+##### Building a single module of an extension
+
+Let's say you want to make changes to the `deployment` module of `Jackson` extension. There are two ways to accomplish this task as shown by the following commands:
+
+```
+./mvnw install -f extensions/jackson/deployment
+```                                                  
+
+or 
+
+```
+./mvnw install --projects 'io.quarkus:quarkus-jackson-deployment'
+``` 
+
+In this command we use the groupId and artifactId of the module to identify it.
+
+##### Running a single test
+
+Often you need to run a single test from some Maven module. Say for example you want to run the `GreetingResourceTest` of the `resteasy-jackson` Quarkus integration test (which can be found https://github.com/quarkusio/quarkus/blob/master/integration-tests/resteasy-jackson[here]).
+One way to accomplish this is by executing the following command:
+
+```
+./mvnw test -f integration-tests/resteasy-jackson/ -Dtest=GreetingResourceTest
+```
+ 
+
+### Updating the version
+
+Be careful, when using the `master` branch, you need to use the `quarkus-bom` instead of the `quarkus-universe-bom`.
+
+Update both the versions of the `quarkus-bom` and the Quarkus Maven plugin to `999-SNAPSHOT`.
+
+You can now test your application.
+
 ## Before you contribute
 
 To contribute, use GitHub Pull Requests, from your **own** fork.
@@ -29,6 +111,12 @@ To contribute, use GitHub Pull Requests, from your **own** fork.
 ### Code reviews
 
 All submissions, including submissions by project members, need to be reviewed before being merged.
+
+### Coding Guidelines
+
+ * We decided to disallow `@author` tags in the Javadoc: they are hard to maintain, especially in a very active project, and we use the Git history to track authorship. GitHub also has [this nice page with your contributions](https://github.com/quarkusio/quarkus/graphs/contributors). For each major Quarkus release, we also publish the list of contributors in the announcement post.
+ * Commits should be atomic and semantic. Please properly squash your pull requests before submitting them. Fixup commits can be used temporarily during the review process but things should be squashed at the end to have meaningful commits.
+ We use merge commits so the GitHub Merge button cannot do that for us. If you don't know how to do that, just ask in your pull request, we will be happy to help!
 
 ### Continuous Integration
 
@@ -128,8 +216,23 @@ After the build was successful, the artifacts are available in your local Maven 
 
 To include them into your project a few things have to be changed.
 
-#### With Gradle
+#### With Maven
 
+*pom.xml*
+
+```
+<properties>
+    <quarkus-plugin.version>999-SNAPSHOT</quarkus-plugin.version>
+    <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
+    <quarkus.platform.group-id>io.quarkus</quarkus.platform.group-id>
+    <quarkus.platform.version>999-SNAPSHOT</quarkus.platform.version>
+    .
+    .
+    .
+</properties>
+```
+
+#### With Gradle
 
 *gradle.properties*
 
@@ -164,22 +267,6 @@ repositories {
     jcenter()
     mavenCentral()
 }
-```
-
-#### With Maven
-
-*pom.xml*
-
-```
-<properties>
-    <quarkus-plugin.version>999-SNAPSHOT</quarkus-plugin.version>
-    <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
-    <quarkus.platform.group-id>io.quarkus</quarkus.platform.group-id>
-    <quarkus.platform.version>999-SNAPSHOT</quarkus.platform.version>
-    .
-    .
-    .
-</properties>
 ```
 
 ### MicroProfile TCK's

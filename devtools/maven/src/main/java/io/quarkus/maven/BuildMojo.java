@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Properties;
 
 import org.apache.maven.artifact.Artifact;
+import org.apache.maven.model.Resource;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.Component;
@@ -27,6 +28,8 @@ import io.quarkus.bootstrap.app.AugmentResult;
 import io.quarkus.bootstrap.app.CuratedApplication;
 import io.quarkus.bootstrap.app.QuarkusBootstrap;
 import io.quarkus.bootstrap.model.AppArtifact;
+import io.quarkus.bootstrap.model.AppArtifactKey;
+import io.quarkus.bootstrap.model.PathsCollection;
 import io.quarkus.bootstrap.resolver.maven.MavenArtifactResolver;
 
 /**
@@ -160,6 +163,7 @@ public class BuildMojo extends AbstractMojo {
             realProperties.putIfAbsent("quarkus.application.version", project.getVersion());
 
             MavenArtifactResolver resolver = MavenArtifactResolver.builder()
+                    .setWorkspaceDiscovery(false)
                     .setRepositorySystem(repoSystem)
                     .setRepositorySystemSession(repoSession)
                     .setRemoteRepositories(repos)
@@ -170,39 +174,60 @@ public class BuildMojo extends AbstractMojo {
                     projectArtifact.getClassifier(), projectArtifact.getArtifactHandler().getExtension(),
                     projectArtifact.getVersion());
 
-            CuratedApplication curatedApplication = QuarkusBootstrap.builder()
+            File projectFile = projectArtifact.getFile();
+            if (projectFile == null) {
+                projectFile = new File(project.getBuild().getOutputDirectory());
+                if (!projectFile.exists()) {
+                    if (hasSources(project)) {
+                        throw new MojoExecutionException("Project " + project.getArtifact() + " has not been compiled yet");
+                    }
+                    if (!projectFile.mkdirs()) {
+                        throw new MojoExecutionException("Failed to create the output dir " + projectFile);
+                    }
+                }
+            }
+            appArtifact.setPaths(PathsCollection.of(projectFile.toPath()));
+
+            QuarkusBootstrap.Builder builder = QuarkusBootstrap.builder()
                     .setAppArtifact(appArtifact)
-                    .setProjectRoot(project.getBasedir().toPath())
                     .setMavenArtifactResolver(resolver)
                     .setBaseClassLoader(BuildMojo.class.getClassLoader())
                     .setBuildSystemProperties(realProperties)
                     .setLocalProjectDiscovery(false)
+                    .setProjectRoot(project.getBasedir().toPath())
                     .setBaseName(finalName)
-                    .setTargetDirectory(buildDir.toPath())
-                    .build().bootstrap();
+                    .setTargetDirectory(buildDir.toPath());
 
-            AugmentAction action = curatedApplication.createAugmentor();
-            AugmentResult result = action.createProductionApplication();
-
-            Artifact original = project.getArtifact();
-            if (result.getJar() != null) {
-                if (result.getJar().isUberJar() && result.getJar().getOriginalArtifact() != null) {
-                    final Path standardJar = curatedApplication.getAppModel().getAppArtifact().getPaths().getSinglePath();
-                    if (Files.exists(standardJar)) {
-                        try {
-                            Files.deleteIfExists(result.getJar().getOriginalArtifact());
-                            Files.move(standardJar, result.getJar().getOriginalArtifact());
-                        } catch (IOException e) {
-                            throw new UncheckedIOException(e);
-                        }
-                        original.setFile(result.getJar().getOriginalArtifact().toFile());
-                    }
-                }
-                if (result.getJar().isUberJar()) {
-                    projectHelper.attachArtifact(project, result.getJar().getPath().toFile(), "runner");
-                }
+            for (MavenProject project : project.getCollectedProjects()) {
+                builder.addLocalArtifact(new AppArtifactKey(project.getGroupId(), project.getArtifactId(), null,
+                        project.getArtifact().getArtifactHandler().getExtension()));
             }
 
+            try (CuratedApplication curatedApplication = builder
+                    .build().bootstrap()) {
+
+                AugmentAction action = curatedApplication.createAugmentor();
+                AugmentResult result = action.createProductionApplication();
+
+                Artifact original = project.getArtifact();
+                if (result.getJar() != null) {
+                    if (result.getJar().isUberJar() && result.getJar().getOriginalArtifact() != null) {
+                        final Path standardJar = curatedApplication.getAppModel().getAppArtifact().getPaths().getSinglePath();
+                        if (Files.exists(standardJar)) {
+                            try {
+                                Files.deleteIfExists(result.getJar().getOriginalArtifact());
+                                Files.move(standardJar, result.getJar().getOriginalArtifact());
+                            } catch (IOException e) {
+                                throw new UncheckedIOException(e);
+                            }
+                            original.setFile(result.getJar().getOriginalArtifact().toFile());
+                        }
+                    }
+                    if (result.getJar().isUberJar()) {
+                        projectHelper.attachArtifact(project, result.getJar().getPath().toFile(), "runner");
+                    }
+                }
+            }
         } catch (Exception e) {
             throw new MojoExecutionException("Failed to build quarkus application", e);
         } finally {
@@ -212,4 +237,15 @@ public class BuildMojo extends AbstractMojo {
         }
     }
 
+    private static boolean hasSources(MavenProject project) {
+        if (new File(project.getBuild().getSourceDirectory()).exists()) {
+            return true;
+        }
+        for (Resource r : project.getBuild().getResources()) {
+            if (new File(r.getDirectory()).exists()) {
+                return true;
+            }
+        }
+        return false;
+    }
 }

@@ -5,6 +5,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -32,8 +33,10 @@ import io.quarkus.deployment.pkg.builditem.ArtifactResultBuildItem;
 import io.quarkus.deployment.pkg.builditem.NativeImageBuildItem;
 import io.quarkus.deployment.pkg.builditem.NativeImageSourceJarBuildItem;
 import io.quarkus.deployment.pkg.builditem.OutputTargetBuildItem;
+import io.quarkus.deployment.pkg.builditem.ProcessInheritIODisabled;
 import io.quarkus.deployment.util.FileUtil;
 import io.quarkus.deployment.util.GlobUtil;
+import io.quarkus.deployment.util.ProcessUtil;
 
 public class NativeImageBuildStep {
 
@@ -61,6 +64,9 @@ public class NativeImageBuildStep {
 
     private static final int OOM_ERROR_VALUE = 137;
     private static final String QUARKUS_XMX_PROPERTY = "quarkus.native.native-image-xmx";
+    private static final String CONTAINER_BUILD_VOLUME_PATH = "/project";
+    private static final String TRUST_STORE_SYSTEM_PROPERTY_MARKER = "-Djavax.net.ssl.trustStore=";
+    private static final String MOVED_TRUST_STORE_NAME = "trustStore";
 
     @BuildStep(onlyIf = NativeBuild.class)
     ArtifactResultBuildItem result(NativeImageBuildItem image) {
@@ -71,7 +77,8 @@ public class NativeImageBuildStep {
     public NativeImageBuildItem build(NativeConfig nativeConfig, NativeImageSourceJarBuildItem nativeImageSourceJarBuildItem,
             OutputTargetBuildItem outputTargetBuildItem,
             PackageConfig packageConfig,
-            List<NativeImageSystemPropertyBuildItem> nativeImageProperties) {
+            List<NativeImageSystemPropertyBuildItem> nativeImageProperties,
+            final Optional<ProcessInheritIODisabled> processInheritIODisabled) {
         Path runnerJar = nativeImageSourceJarBuildItem.getPath();
         log.info("Building native image from " + runnerJar);
         Path outputDir = nativeImageSourceJarBuildItem.getPath().getParent();
@@ -83,7 +90,8 @@ public class NativeImageBuildStep {
 
         String noPIE = "";
 
-        if (nativeConfig.containerRuntime.isPresent() || nativeConfig.containerBuild) {
+        boolean isContainerBuild = nativeConfig.containerRuntime.isPresent() || nativeConfig.containerBuild;
+        if (isContainerBuild) {
             String containerRuntime = nativeConfig.containerRuntime.orElse("docker");
             // E.g. "/usr/bin/docker run -v {{PROJECT_DIR}}:/project --rm quarkus/graalvm-native-image"
             nativeImage = new ArrayList<>();
@@ -92,7 +100,8 @@ public class NativeImageBuildStep {
             if (IS_WINDOWS) {
                 outputPath = FileUtil.translateToVolumePath(outputPath);
             }
-            Collections.addAll(nativeImage, containerRuntime, "run", "-v", outputPath + ":/project:z", "--env", "LANG=C");
+            Collections.addAll(nativeImage, containerRuntime, "run", "-v",
+                    outputPath + ":" + CONTAINER_BUILD_VOLUME_PATH + ":z", "--env", "LANG=C");
 
             if (IS_LINUX) {
                 if ("docker".equals(containerRuntime)) {
@@ -117,12 +126,12 @@ public class NativeImageBuildStep {
                 // we pull the docker image in order to give users an indication of which step the process is at
                 // it's not strictly necessary we do this, however if we don't the subsequent version command
                 // will appear to block and no output will be shown
-                log.info("Pulling image " + nativeConfig.builderImage);
+                log.info("Checking image status " + nativeConfig.builderImage);
                 Process pullProcess = null;
                 try {
-                    pullProcess = new ProcessBuilder(Arrays.asList(containerRuntime, "pull", nativeConfig.builderImage))
-                            .inheritIO()
-                            .start();
+                    final ProcessBuilder pb = new ProcessBuilder(
+                            Arrays.asList(containerRuntime, "pull", nativeConfig.builderImage));
+                    pullProcess = ProcessUtil.launchProcess(pb, processInheritIODisabled);
                     pullProcess.waitFor();
                 } catch (IOException | InterruptedException e) {
                     throw new RuntimeException("Failed to pull builder image " + nativeConfig.builderImage, e);
@@ -187,12 +196,9 @@ public class NativeImageBuildStep {
             if (nativeConfig.cleanupServer) {
                 List<String> cleanup = new ArrayList<>(nativeImage);
                 cleanup.add("--server-shutdown");
-                ProcessBuilder pb = new ProcessBuilder(cleanup.toArray(new String[0]));
+                final ProcessBuilder pb = new ProcessBuilder(cleanup.toArray(new String[0]));
                 pb.directory(outputDir.toFile());
-                pb.redirectInput(ProcessBuilder.Redirect.INHERIT);
-                pb.redirectOutput(ProcessBuilder.Redirect.INHERIT);
-                pb.redirectError(ProcessBuilder.Redirect.INHERIT);
-                Process process = pb.start();
+                final Process process = ProcessUtil.launchProcess(pb, processInheritIODisabled);
                 process.waitFor();
             }
             Boolean enableSslNative = false;
@@ -227,7 +233,7 @@ public class NativeImageBuildStep {
                 nativeConfig.enableAllSecurityServices = true;
             }
 
-            nativeConfig.additionalBuildArgs.ifPresent(l -> l.stream().map(String::trim).forEach(command::add));
+            handleAdditionalProperties(nativeConfig, command, isContainerBuild, outputDir);
             nativeConfig.resources.includes.ifPresent(l -> l.stream()
                     .map(GlobUtil::toRegexPattern)
                     .map(re -> "-H:IncludeResources=" + re.trim())
@@ -329,11 +335,8 @@ public class NativeImageBuildStep {
 
             log.info(String.join(" ", command));
             CountDownLatch errorReportLatch = new CountDownLatch(1);
-
-            Process process = new ProcessBuilder(command)
-                    .directory(outputDir.toFile())
-                    .inheritIO()
-                    .start();
+            final ProcessBuilder processBuilder = new ProcessBuilder(command).directory(outputDir.toFile());
+            final Process process = ProcessUtil.launchProcessStreamStdOut(processBuilder, processInheritIODisabled);
             ExecutorService executor = Executors.newSingleThreadExecutor();
             executor.submit(new ErrorReplacingProcessReader(process.getErrorStream(), outputDir.resolve("reports").toFile(),
                     errorReportLatch));
@@ -343,7 +346,7 @@ public class NativeImageBuildStep {
             if (exitCode != 0) {
                 throw imageGenerationFailed(exitCode, command);
             }
-            if (IS_WINDOWS && !(nativeConfig.containerRuntime.isPresent() || nativeConfig.containerBuild)) {
+            if (IS_WINDOWS && !(isContainerBuild)) {
                 //once image is generated it gets added .exe on Windows
                 executableName = executableName + ".exe";
             }
@@ -356,6 +359,40 @@ public class NativeImageBuildStep {
             return new NativeImageBuildItem(finalPath);
         } catch (Exception e) {
             throw new RuntimeException("Failed to build native image", e);
+        }
+    }
+
+    private void handleAdditionalProperties(NativeConfig nativeConfig, List<String> command, boolean isContainerBuild,
+            Path outputDir) {
+        if (nativeConfig.additionalBuildArgs.isPresent()) {
+            List<String> strings = nativeConfig.additionalBuildArgs.get();
+            for (String buildArg : strings) {
+                String trimmedBuildArg = buildArg.trim();
+                if (trimmedBuildArg.contains(TRUST_STORE_SYSTEM_PROPERTY_MARKER) && isContainerBuild) {
+                    /*
+                     * When the native binary is being built with a docker container, because a volume is created,
+                     * we need to copy the trustStore file into the output directory (which is the root of volume)
+                     * and change the value of 'javax.net.ssl.trustStore' property to point to this value
+                     *
+                     * TODO: we might want to introduce a dedicated property in order to overcome this ugliness
+                     */
+                    int index = trimmedBuildArg.indexOf(TRUST_STORE_SYSTEM_PROPERTY_MARKER);
+                    if (trimmedBuildArg.length() > index + 2) {
+                        String configuredTrustStorePath = trimmedBuildArg
+                                .substring(index + TRUST_STORE_SYSTEM_PROPERTY_MARKER.length());
+                        try {
+                            IoUtils.copy(Paths.get(configuredTrustStorePath), outputDir.resolve(MOVED_TRUST_STORE_NAME));
+                            command.add(trimmedBuildArg.substring(0, index) + TRUST_STORE_SYSTEM_PROPERTY_MARKER
+                                    + CONTAINER_BUILD_VOLUME_PATH + "/" + MOVED_TRUST_STORE_NAME);
+                        } catch (IOException e) {
+                            throw new UncheckedIOException("Unable to copy trustStore file '" + configuredTrustStorePath
+                                    + "' to volume root directory '" + outputDir.toAbsolutePath().toString() + "'", e);
+                        }
+                    }
+                } else {
+                    command.add(trimmedBuildArg);
+                }
+            }
         }
     }
 
@@ -377,11 +414,11 @@ public class NativeImageBuildStep {
 
     private void checkGraalVMVersion(String version) {
         log.info("Running Quarkus native-image plugin on " + version);
-        final List<String> obsoleteGraalVmVersions = Arrays.asList("1.0.0", "19.0.", "19.1.", "19.2.", "19.3.0");
+        final List<String> obsoleteGraalVmVersions = Arrays.asList("1.0.0", "19.0.", "19.1.", "19.2.", "19.3.0", "20.0.");
         final boolean vmVersionIsObsolete = obsoleteGraalVmVersions.stream().anyMatch(v -> version.contains(" " + v));
         if (vmVersionIsObsolete) {
             throw new IllegalStateException("Out of date version of GraalVM detected: " + version + "."
-                    + " Quarkus currently supports GraalVM 19.3.1 and 20.0.0. Please upgrade GraalVM to one of these versions.");
+                    + " Quarkus currently supports GraalVM 19.3.2 and 20.1.0. Please upgrade GraalVM to one of these versions.");
         }
     }
 

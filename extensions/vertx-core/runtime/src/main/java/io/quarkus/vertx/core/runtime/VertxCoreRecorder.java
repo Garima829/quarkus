@@ -1,10 +1,14 @@
 package io.quarkus.vertx.core.runtime;
 
+import static io.quarkus.vertx.core.runtime.SSLConfigHelper.configureJksKeyCertOptions;
+import static io.quarkus.vertx.core.runtime.SSLConfigHelper.configurePemKeyCertOptions;
+import static io.quarkus.vertx.core.runtime.SSLConfigHelper.configurePemTrustOptions;
+import static io.quarkus.vertx.core.runtime.SSLConfigHelper.configurePfxKeyCertOptions;
+import static io.quarkus.vertx.core.runtime.SSLConfigHelper.configurePfxTrustOptions;
 import static io.vertx.core.file.impl.FileResolver.CACHE_DIR_BASE_PROP_NAME;
 
 import java.io.File;
 import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -13,8 +17,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
-import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 import org.jboss.logging.Logger;
 import org.wildfly.common.cpu.ProcessorInfo;
@@ -27,25 +29,21 @@ import io.quarkus.runtime.annotations.Recorder;
 import io.quarkus.vertx.core.runtime.config.ClusterConfiguration;
 import io.quarkus.vertx.core.runtime.config.EventBusConfiguration;
 import io.quarkus.vertx.core.runtime.config.VertxConfiguration;
+import io.vertx.core.AsyncResult;
 import io.vertx.core.Context;
+import io.vertx.core.Handler;
 import io.vertx.core.Vertx;
 import io.vertx.core.VertxOptions;
 import io.vertx.core.eventbus.EventBusOptions;
 import io.vertx.core.file.FileSystemOptions;
 import io.vertx.core.http.ClientAuth;
 import io.vertx.core.impl.VertxImpl;
-import io.vertx.core.net.JksOptions;
-import io.vertx.core.net.PemKeyCertOptions;
-import io.vertx.core.net.PemTrustOptions;
-import io.vertx.core.net.PfxOptions;
 import io.vertx.core.spi.resolver.ResolverProvider;
 
 @Recorder
 public class VertxCoreRecorder {
 
     private static final Logger LOGGER = Logger.getLogger(VertxCoreRecorder.class.getName());
-
-    private static final Pattern COMMA_PATTERN = Pattern.compile(",");
 
     static volatile VertxSupplier vertx;
 
@@ -76,7 +74,18 @@ public class VertxCoreRecorder {
 
     static void shutdownDevMode() {
         if (vertx != null) {
-            vertx.get().close();
+            CountDownLatch latch = new CountDownLatch(1);
+            vertx.get().close(new Handler<AsyncResult<Void>>() {
+                @Override
+                public void handle(AsyncResult<Void> event) {
+                    latch.countDown();
+                }
+            });
+            try {
+                latch.await();
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            }
         }
     }
 
@@ -244,54 +253,14 @@ public class VertxCoreRecorder {
         opts.setTrustAll(eb.trustAll);
 
         // Certificates and trust.
-        if (eb.keyCertificatePem != null) {
-            List<String> certs = new ArrayList<>();
-            List<String> keys = new ArrayList<>();
-            eb.keyCertificatePem.certs.ifPresent(
-                    s -> certs.addAll(COMMA_PATTERN.splitAsStream(s).map(String::trim).collect(Collectors.toList())));
-            eb.keyCertificatePem.keys.ifPresent(
-                    s -> keys.addAll(COMMA_PATTERN.splitAsStream(s).map(String::trim).collect(Collectors.toList())));
-            PemKeyCertOptions o = new PemKeyCertOptions()
-                    .setCertPaths(certs)
-                    .setKeyPaths(keys);
-            opts.setPemKeyCertOptions(o);
-        }
+        configurePemKeyCertOptions(opts, eb.keyCertificatePem);
+        configureJksKeyCertOptions(opts, eb.keyCertificateJks);
+        configurePfxKeyCertOptions(opts, eb.keyCertificatePfx);
 
-        if (eb.keyCertificateJks != null) {
-            JksOptions o = new JksOptions();
-            eb.keyCertificateJks.path.ifPresent(o::setPath);
-            eb.keyCertificateJks.password.ifPresent(o::setPassword);
-            opts.setKeyStoreOptions(o);
-        }
+        configurePemTrustOptions(opts, eb.trustCertificatePem);
+        configureJksKeyCertOptions(opts, eb.trustCertificateJks);
+        configurePfxTrustOptions(opts, eb.trustCertificatePfx);
 
-        if (eb.keyCertificatePfx != null) {
-            PfxOptions o = new PfxOptions();
-            eb.keyCertificatePfx.path.ifPresent(o::setPath);
-            eb.keyCertificatePfx.password.ifPresent(o::setPassword);
-            opts.setPfxKeyCertOptions(o);
-        }
-
-        if (eb.trustCertificatePem != null) {
-            eb.trustCertificatePem.certs.ifPresent(s -> {
-                PemTrustOptions o = new PemTrustOptions();
-                COMMA_PATTERN.splitAsStream(s).map(String::trim).forEach(o::addCertPath);
-                opts.setPemTrustOptions(o);
-            });
-        }
-
-        if (eb.trustCertificateJks != null) {
-            JksOptions o = new JksOptions();
-            eb.trustCertificateJks.path.ifPresent(o::setPath);
-            eb.trustCertificateJks.password.ifPresent(o::setPassword);
-            opts.setTrustStoreOptions(o);
-        }
-
-        if (eb.trustCertificatePfx != null) {
-            PfxOptions o = new PfxOptions();
-            eb.trustCertificatePfx.path.ifPresent(o::setPath);
-            eb.trustCertificatePfx.password.ifPresent(o::setPassword);
-            opts.setPfxTrustOptions(o);
-        }
         options.setEventBusOptions(opts);
     }
 

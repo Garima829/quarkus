@@ -130,9 +130,6 @@
         </resources>
         <plugins>
             <plugin>
-                <artifactId>maven-surefire-plugin</artifactId>
-            </plugin>
-            <plugin>
                 <artifactId>maven-failsafe-plugin</artifactId>
             </plugin>
             <!-- Skip enforcer plugin as we want to use jboss marshalling for test class -->
@@ -177,9 +174,9 @@
                                     <goal>verify</goal>
                                 </goals>
                                 <configuration>
-                                    <systemProperties>
+                                    <systemPropertyVariables>
                                         <native.image.path>${project.build.directory}/${project.build.finalName}-runner</native.image.path>
-                                    </systemProperties>
+                                    </systemPropertyVariables>
                                 </configuration>
                             </execution>
                         </executions>

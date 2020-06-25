@@ -14,31 +14,38 @@ import java.nio.file.Paths;
 import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.jboss.logging.Logger;
 
+import io.quarkus.bootstrap.runner.Timing;
 import io.quarkus.deployment.util.FileUtil;
 import io.quarkus.dev.spi.HotReplacementContext;
 import io.quarkus.dev.spi.HotReplacementSetup;
-import io.quarkus.runtime.Timing;
 
 public class RuntimeUpdatesProcessor implements HotReplacementContext, Closeable {
-    private static final String CLASS_EXTENSION = ".class";
-    private static final Logger log = Logger.getLogger(RuntimeUpdatesProcessor.class.getPackage().getName());
 
+    private static final Logger log = Logger.getLogger(RuntimeUpdatesProcessor.class);
+
+    private static final String CLASS_EXTENSION = ".class";
+
+    private final Path applicationRoot;
     private final DevModeContext context;
     private final ClassLoaderCompiler compiler;
+    volatile Throwable compileProblem;
 
     // file path -> isRestartNeeded
     private volatile Map<String, Boolean> watchedFilePaths = Collections.emptyMap();
@@ -66,18 +73,22 @@ public class RuntimeUpdatesProcessor implements HotReplacementContext, Closeable
     private final List<Runnable> preScanSteps = new CopyOnWriteArrayList<>();
     private final List<Consumer<Set<String>>> noRestartChangesConsumers = new CopyOnWriteArrayList<>();
     private final List<HotReplacementSetup> hotReplacementSetup = new ArrayList<>();
-    private final IsolatedDevModeMain devModeMain;
+    private final Consumer<Set<String>> restartCallback;
+    private final BiConsumer<DevModeContext.ModuleInfo, String> copyResourceNotification;
 
-    public RuntimeUpdatesProcessor(DevModeContext context, ClassLoaderCompiler compiler, IsolatedDevModeMain devModeMain) {
+    public RuntimeUpdatesProcessor(Path applicationRoot, DevModeContext context, ClassLoaderCompiler compiler,
+            Consumer<Set<String>> restartCallback, BiConsumer<DevModeContext.ModuleInfo, String> copyResourceNotification) {
+        this.applicationRoot = applicationRoot;
         this.context = context;
         this.compiler = compiler;
-        this.devModeMain = devModeMain;
+        this.restartCallback = restartCallback;
+        this.copyResourceNotification = copyResourceNotification;
     }
 
     @Override
     public Path getClassesDir() {
         //TODO: fix all these
-        for (DevModeContext.ModuleInfo i : context.getModules()) {
+        for (DevModeContext.ModuleInfo i : context.getAllModules()) {
             return Paths.get(i.getResourcePath());
         }
         return null;
@@ -85,15 +96,17 @@ public class RuntimeUpdatesProcessor implements HotReplacementContext, Closeable
 
     @Override
     public List<Path> getSourcesDir() {
-        return context.getModules().stream().flatMap(m -> m.getSourcePaths().stream()).map(Paths::get).collect(toList());
+        return context.getAllModules().stream().flatMap(m -> m.getSourcePaths().stream()).map(Paths::get).collect(toList());
     }
 
     @Override
     public List<Path> getResourcesDir() {
         List<Path> ret = new ArrayList<>();
-        for (DevModeContext.ModuleInfo i : context.getModules()) {
+        for (DevModeContext.ModuleInfo i : context.getAllModules()) {
             if (i.getResourcePath() != null) {
                 ret.add(Paths.get(i.getResourcePath()));
+            } else if (i.getResourcesOutputPath() != null) {
+                ret.add(Paths.get(i.getResourcesOutputPath()));
             }
         }
         Collections.reverse(ret); //make sure the actual project is before dependencies
@@ -103,8 +116,29 @@ public class RuntimeUpdatesProcessor implements HotReplacementContext, Closeable
     @Override
     public Throwable getDeploymentProblem() {
         //we differentiate between these internally, however for the error reporting they are the same
-        return IsolatedDevModeMain.compileProblem != null ? IsolatedDevModeMain.compileProblem
+        return compileProblem != null ? compileProblem
                 : IsolatedDevModeMain.deploymentProblem;
+    }
+
+    @Override
+    public void setRemoteProblem(Throwable throwable) {
+        compileProblem = throwable;
+    }
+
+    @Override
+    public void updateFile(String file, byte[] data) {
+        if (file.startsWith("/")) {
+            file = file.substring(1);
+        }
+        try {
+            Path resolve = applicationRoot.resolve(file);
+            if (!Files.exists(resolve.getParent())) {
+                Files.createDirectories(resolve.getParent());
+            }
+            Files.write(resolve, data);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     @Override
@@ -136,7 +170,7 @@ public class RuntimeUpdatesProcessor implements HotReplacementContext, Closeable
             restartNeeded = filesChanged.stream().map(watchedFilePaths::get).anyMatch(Boolean.TRUE::equals);
         }
         if (restartNeeded) {
-            devModeMain.restartApp(filesChanged);
+            restartCallback.accept(filesChanged);
             log.infof("Hot replace total time: %ss ", Timing.convertToBigDecimalSeconds(System.nanoTime() - startNanoseconds));
             return true;
         } else if (!filesChanged.isEmpty()) {
@@ -163,11 +197,32 @@ public class RuntimeUpdatesProcessor implements HotReplacementContext, Closeable
         noRestartChangesConsumers.add(consumer);
     }
 
+    @Override
+    public Set<String> syncState(Map<String, String> fileHashes) {
+        Set<String> ret = new HashSet<>();
+        try {
+            Map<String, String> ourHashes = new HashMap<>(IsolatedRemoteDevModeMain.createHashes(applicationRoot));
+            for (Map.Entry<String, String> i : fileHashes.entrySet()) {
+                String ours = ourHashes.remove(i.getKey());
+                if (!Objects.equals(ours, i.getValue())) {
+                    ret.add(i.getKey());
+                }
+            }
+            for (Map.Entry<String, String> remaining : ourHashes.entrySet()) {
+                log.info("Deleting removed file " + remaining.getKey());
+                Files.deleteIfExists(applicationRoot.resolve(remaining.getKey()));
+            }
+            return ret;
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
     boolean checkForChangedClasses() throws IOException {
         boolean hasChanges = false;
         boolean ignoreFirstScanChanges = !firstScanDone;
 
-        for (DevModeContext.ModuleInfo module : context.getModules()) {
+        for (DevModeContext.ModuleInfo module : context.getAllModules()) {
             final List<Path> moduleChangedSourceFilePaths = new ArrayList<>();
 
             for (String sourcePath : module.getSourcePaths()) {
@@ -194,9 +249,9 @@ public class RuntimeUpdatesProcessor implements HotReplacementContext, Closeable
                         moduleChangedSourceFilePaths.addAll(changedPaths);
                         compiler.compile(sourcePath, changedSourceFiles.stream()
                                 .collect(groupingBy(this::getFileExtension, Collectors.toSet())));
-                        IsolatedDevModeMain.compileProblem = null;
+                        compileProblem = null;
                     } catch (Exception e) {
-                        IsolatedDevModeMain.compileProblem = e;
+                        compileProblem = e;
                         return false;
                     }
                 }
@@ -210,6 +265,10 @@ public class RuntimeUpdatesProcessor implements HotReplacementContext, Closeable
 
         this.firstScanDone = true;
         return hasChanges;
+    }
+
+    public Throwable getCompileProblem() {
+        return compileProblem;
     }
 
     private boolean checkForClassFilesChangesInModule(DevModeContext.ModuleInfo module, List<Path> moduleChangedSourceFiles,
@@ -297,7 +356,7 @@ public class RuntimeUpdatesProcessor implements HotReplacementContext, Closeable
 
     Set<String> checkForFileChange() {
         Set<String> ret = new HashSet<>();
-        for (DevModeContext.ModuleInfo module : context.getModules()) {
+        for (DevModeContext.ModuleInfo module : context.getAllModules()) {
             final Set<Path> moduleResources = correspondingResources.computeIfAbsent(module.getName(),
                     m -> Collections.newSetFromMap(new ConcurrentHashMap<>()));
             boolean doCopy = true;
@@ -335,9 +394,13 @@ public class RuntimeUpdatesProcessor implements HotReplacementContext, Closeable
                                             Files.createDirectories(target);
                                         } else {
                                             Files.createDirectories(target.getParent());
+                                            ret.add(relative.toString());
                                             byte[] data = Files.readAllBytes(path);
                                             try (FileOutputStream out = new FileOutputStream(target.toFile())) {
                                                 out.write(data);
+                                            }
+                                            if (copyResourceNotification != null) {
+                                                copyResourceNotification.accept(module, relative.toString());
                                             }
                                         }
                                     }
@@ -427,7 +490,7 @@ public class RuntimeUpdatesProcessor implements HotReplacementContext, Closeable
         this.watchedFilePaths = watchedFilePaths;
         watchedFileTimestamps.clear();
 
-        for (DevModeContext.ModuleInfo module : context.getModules()) {
+        for (DevModeContext.ModuleInfo module : context.getAllModules()) {
             String rootPath = module.getResourcePath();
 
             if (rootPath == null) {

@@ -27,8 +27,7 @@ import javax.enterprise.inject.spi.Bean;
 import javax.enterprise.inject.spi.InjectionPoint;
 
 /**
- *
- * @author Martin Kouba
+ * Set the current {@link InjectionPoint} during creation of a dependent bean.
  */
 public class CurrentInjectionPointProvider<T> implements InjectableReferenceProvider<T> {
 
@@ -56,6 +55,10 @@ public class CurrentInjectionPointProvider<T> implements InjectableReferenceProv
         }
     }
 
+    InjectableReferenceProvider<T> getDelegate() {
+        return delegateSupplier.get();
+    }
+
     public static class InjectionPointImpl implements InjectionPoint {
 
         private final Type requiredType;
@@ -74,8 +77,10 @@ public class CurrentInjectionPointProvider<T> implements InjectableReferenceProv
             if (javaMember instanceof Executable) {
                 this.annotated = new AnnotatedParameterImpl<>(injectionPointType, annotations, position,
                         (Executable) javaMember);
-            } else {
+            } else if (javaMember instanceof Field) {
                 this.annotated = new AnnotatedFieldImpl<>(injectionPointType, annotations, (Field) javaMember);
+            } else {
+                this.annotated = null;
             }
             this.member = javaMember;
         }

@@ -33,6 +33,7 @@ import io.quarkus.cache.runtime.CacheInvalidateInterceptor;
 import io.quarkus.cache.runtime.CacheResultInterceptor;
 import io.quarkus.cache.runtime.caffeine.CaffeineCacheBuildRecorder;
 import io.quarkus.cache.runtime.caffeine.CaffeineCacheInfo;
+import io.quarkus.deployment.Feature;
 import io.quarkus.deployment.annotations.BuildStep;
 import io.quarkus.deployment.annotations.Record;
 import io.quarkus.deployment.builditem.CombinedIndexBuildItem;
@@ -43,7 +44,7 @@ class CacheProcessor {
 
     @BuildStep
     FeatureBuildItem feature() {
-        return new FeatureBuildItem(FeatureBuildItem.CACHE);
+        return new FeatureBuildItem(Feature.CACHE);
     }
 
     @BuildStep
@@ -79,8 +80,12 @@ class CacheProcessor {
     @Record(RUNTIME_INIT)
     void recordCachesBuild(CombinedIndexBuildItem combinedIndex, BeanContainerBuildItem beanContainer, CacheConfig config,
             CaffeineCacheBuildRecorder caffeineRecorder,
+            List<AdditionalCacheNameBuildItem> additionalCacheNames,
             Optional<ManagedExecutorInitializedBuildItem> managedExecutorInitialized) {
         Set<String> cacheNames = getCacheNames(combinedIndex.getIndex());
+        for (AdditionalCacheNameBuildItem additionalCacheName : additionalCacheNames) {
+            cacheNames.add(additionalCacheName.getName());
+        }
         switch (config.type) {
             case CacheDeploymentConstants.CAFFEINE_CACHE_TYPE:
                 Set<CaffeineCacheInfo> cacheInfos = CaffeineCacheInfoBuilder.build(cacheNames, config);

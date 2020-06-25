@@ -73,6 +73,24 @@ This command generates a Maven structure importing the following extensions:
  * Hibernate Search + Elasticsearch,
  * RESTEasy and JSON-B.
 
+If you already have your Quarkus project configured, you can add the `hibernate-search-elasticsearch` extension
+to your project by running the following command in your project base directory:
+
+[source,bash]
+----
+./mvnw quarkus:add-extension -Dextensions="hibernate-search-elasticsearch"
+----
+
+This will add the following to your `pom.xml`:
+
+[source,xml]
+----
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-hibernate-search-elasticsearch</artifactId>
+</dependency>
+----
+
 [IMPORTANT]
 ====
 For now, let's delete the two generated tests `LibraryResourceTest` and `NativeLibraryResourceIT` present in `src/test/java`.
@@ -602,7 +620,7 @@ Let's use Docker to start one of each:
 
 [source, shell]
 ----
-docker run -it --rm=true --name elasticsearch_quarkus_test -p 9200:9200 -p 9300:9300 -e "discovery.type=single-node" docker.elastic.co/elasticsearch/elasticsearch:7.6.1
+docker run -it --rm=true --name elasticsearch_quarkus_test -p 9200:9200 -p 9300:9300 -e "discovery.type=single-node" docker.elastic.co/elasticsearch/elasticsearch:7.7.0
 ----
 
 [source, shell]

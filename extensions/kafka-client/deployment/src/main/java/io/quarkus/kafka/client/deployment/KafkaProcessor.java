@@ -3,9 +3,11 @@ package io.quarkus.kafka.client.deployment;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.function.Consumer;
 
 import javax.security.auth.spi.LoginModule;
 
+import org.apache.kafka.clients.consumer.ConsumerPartitionAssignor;
 import org.apache.kafka.clients.consumer.RangeAssignor;
 import org.apache.kafka.clients.consumer.RoundRobinAssignor;
 import org.apache.kafka.clients.consumer.StickyAssignor;
@@ -44,6 +46,7 @@ import io.quarkus.arc.deployment.AdditionalBeanBuildItem;
 import io.quarkus.deployment.Capabilities;
 import io.quarkus.deployment.annotations.BuildProducer;
 import io.quarkus.deployment.annotations.BuildStep;
+import io.quarkus.deployment.builditem.AdditionalIndexedClassesBuildItem;
 import io.quarkus.deployment.builditem.CombinedIndexBuildItem;
 import io.quarkus.deployment.builditem.IndexDependencyBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.ReflectiveClassBuildItem;
@@ -82,6 +85,20 @@ public class KafkaProcessor {
     };
 
     @BuildStep
+    void contributeClassesToIndex(BuildProducer<AdditionalIndexedClassesBuildItem> additionalIndexedClasses,
+            BuildProducer<IndexDependencyBuildItem> indexDependency) {
+        // This is needed for SASL authentication
+
+        additionalIndexedClasses.produce(new AdditionalIndexedClassesBuildItem(
+                LoginModule.class.getName(),
+                javax.security.auth.Subject.class.getName(),
+                javax.security.auth.login.AppConfigurationEntry.class.getName(),
+                javax.security.auth.login.AppConfigurationEntry.LoginModuleControlFlag.class.getName()));
+
+        indexDependency.produce(new IndexDependencyBuildItem("org.apache.kafka", "kafka-clients"));
+    }
+
+    @BuildStep
     public void build(CombinedIndexBuildItem indexBuildItem, BuildProducer<ReflectiveClassBuildItem> reflectiveClass,
             Capabilities capabilities) {
         final Set<DotName> toRegister = new HashSet<>();
@@ -89,9 +106,11 @@ public class KafkaProcessor {
         collectImplementors(toRegister, indexBuildItem, Serializer.class);
         collectImplementors(toRegister, indexBuildItem, Deserializer.class);
         collectImplementors(toRegister, indexBuildItem, Partitioner.class);
+        // PartitionAssignor is now deprecated, replaced by ConsumerPartitionAssignor
         collectImplementors(toRegister, indexBuildItem, PartitionAssignor.class);
+        collectImplementors(toRegister, indexBuildItem, ConsumerPartitionAssignor.class);
 
-        for (Class i : BUILT_INS) {
+        for (Class<?> i : BUILT_INS) {
             reflectiveClass.produce(new ReflectiveClassBuildItem(false, false, i.getName()));
             collectSubclasses(toRegister, indexBuildItem, i);
         }
@@ -131,18 +150,15 @@ public class KafkaProcessor {
     }
 
     @BuildStep
-    public void withSasl(BuildProducer<IndexDependencyBuildItem> indexDependency,
-            BuildProducer<ReflectiveClassBuildItem> reflectiveClass,
+    public void withSasl(BuildProducer<ReflectiveClassBuildItem> reflectiveClass,
             BuildProducer<ReflectiveHierarchyBuildItem> reflectiveHierarchy) {
-
-        indexDependency.produce(new IndexDependencyBuildItem("org.apache.kafka", "kafka-clients"));
 
         reflectiveClass.produce(new ReflectiveClassBuildItem(false, false, AbstractLogin.DefaultLoginCallbackHandler.class));
         reflectiveClass.produce(new ReflectiveClassBuildItem(false, false, SaslClientCallbackHandler.class));
         reflectiveClass.produce(new ReflectiveClassBuildItem(false, false, DefaultLogin.class));
 
         final Type loginModuleType = Type
-                .create(DotName.createSimple(LoginModule.class.getCanonicalName()), Kind.CLASS);
+                .create(DotName.createSimple(LoginModule.class.getName()), Kind.CLASS);
 
         reflectiveHierarchy.produce(new ReflectiveHierarchyBuildItem(loginModuleType));
     }
@@ -156,14 +172,17 @@ public class KafkaProcessor {
     }
 
     private static void collectClassNames(Set<DotName> set, Collection<ClassInfo> classInfos) {
-        classInfos.forEach(c -> {
-            set.add(c.name());
+        classInfos.forEach(new Consumer<ClassInfo>() {
+            @Override
+            public void accept(ClassInfo c) {
+                set.add(c.name());
+            }
         });
     }
 
     @BuildStep
     HealthBuildItem addHealthCheck(KafkaBuildTimeConfig buildTimeConfig) {
         return new HealthBuildItem("io.quarkus.kafka.client.health.KafkaHealthCheck",
-                buildTimeConfig.healthEnabled, "kafka");
+                buildTimeConfig.healthEnabled);
     }
 }

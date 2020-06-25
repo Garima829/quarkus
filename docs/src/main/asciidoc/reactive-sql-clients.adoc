@@ -11,6 +11,7 @@ include::./attributes.adoc[]
 The Reactive SQL Clients have a straightforward API focusing on scalability and low-overhead.
 Currently, the following database servers are supported:
 
+* DB2
 * PostgreSQL
 * MariaDB/MySQL
 
@@ -220,7 +221,7 @@ A `RowSet` is an `java.lang.Iterable<Row>` and thus can be converted to a `Multi
 [source,java]
 ----
 Multi<Fruit> fruits = rowSet
-  .onItem().produceMulti(set -> Multi.createFrom().items(() -> StreamSupport.stream(set.spliterator(), false)))
+  .onItem().produceMulti(set -> Multi.createFrom().iterable(set))
   .onItem().apply(Fruit::from);
 ----
 
@@ -242,7 +243,7 @@ Putting it all together, the `Fruit.findAll` method looks like:
 ----
 public static Multi<Fruit> findAll(PgPool client) {
     return client.query("SELECT id, name FROM fruits ORDER BY name ASC").execute()
-            .onItem().produceMulti(set -> Multi.createFrom().items(() -> StreamSupport.stream(set.spliterator(), false)))
+            .onItem().produceMulti(set -> Multi.createFrom().iterable(set))
             .onItem().apply(Fruit::from);
 }
 ----
@@ -462,13 +463,17 @@ Navigate to http://localhost:8080/fruits.html and read/create/delete some fruits
 |===
 |Database |Extension name |Pool class name
 
-|PostgreSQL
-|`quarkus-reactive-pg-client`
-|`io.vertx.mutiny.pgclient.PgPool`
+|DB2
+|`quarkus-reactive-db2-client`
+|`io.vertx.mutiny.db2client.DB2Pool`
 
 |MariaDB/MySQL
 |`quarkus-reactive-mysql-client`
 |`io.vertx.mutiny.mysqlclient.MySQLPool`
+
+|PostgreSQL
+|`quarkus-reactive-pg-client`
+|`io.vertx.mutiny.pgclient.PgPool`
 |===
 
 == Transactions
@@ -503,10 +508,10 @@ public static Uni<Void> insertTwoFruits(PgPool client, Fruit fruit1, Fruit fruit
 }
 ----
 
-In this example, the two insertions are not dependant on each other and are executed concurrently (but in the same transaction).
+In this example, the two insertions are not dependent on each other and are executed concurrently (but in the same transaction).
 This transaction is committed on success and rolled back on failure.
 
-You can also create dependant actions as follows:
+You can also create dependent actions as follows:
 
 [source, java]
 ----
@@ -532,6 +537,10 @@ include::{generated-dir}/config/quarkus-datasource.adoc[opts=optional, leveloffs
 === Reactive Datasource
 
 include::{generated-dir}/config/quarkus-reactive-datasource.adoc[opts=optional, leveloffset=+1]
+
+=== DB2
+
+include::{generated-dir}/config/quarkus-reactive-db2-client.adoc[opts=optional, leveloffset=+1]
 
 === MariaDB/MySQL
 

@@ -7,6 +7,8 @@ import java.util.Set;
 import org.bson.Document;
 import org.bson.conversions.Bson;
 
+import com.mongodb.client.model.Collation;
+
 import io.quarkus.mongodb.FindOptions;
 import io.quarkus.mongodb.panache.reactive.ReactivePanacheQuery;
 import io.quarkus.mongodb.panache.runtime.MongoPropertyUtil;
@@ -28,19 +30,23 @@ public class ReactivePanacheQueryImpl<Entity> implements ReactivePanacheQuery<En
 
     private Range range;
 
+    private Collation collation;
+
     ReactivePanacheQueryImpl(ReactiveMongoCollection<? extends Entity> collection, Bson mongoQuery, Bson sort) {
         this.collection = collection;
         this.mongoQuery = mongoQuery;
         this.sort = sort;
     }
 
-    private ReactivePanacheQueryImpl(ReactivePanacheQueryImpl previousQuery, Bson projections) {
-        this.collection = previousQuery.collection;
+    private ReactivePanacheQueryImpl(ReactivePanacheQueryImpl previousQuery, Bson projections, Class<?> type) {
+        this.collection = previousQuery.collection.withDocumentClass(type);
         this.mongoQuery = previousQuery.mongoQuery;
         this.sort = previousQuery.sort;
         this.projections = projections;
         this.page = previousQuery.page;
         this.count = previousQuery.count;
+        this.range = previousQuery.range;
+        this.collation = previousQuery.collation;
     }
 
     // Builder
@@ -56,7 +62,7 @@ public class ReactivePanacheQueryImpl<Entity> implements ReactivePanacheQuery<En
             projections.append(fieldName, 1);
         }
 
-        return new ReactivePanacheQueryImpl(this, projections);
+        return new ReactivePanacheQueryImpl(this, projections, type);
     }
 
     @Override
@@ -144,6 +150,12 @@ public class ReactivePanacheQueryImpl<Entity> implements ReactivePanacheQuery<En
         return (ReactivePanacheQuery<T>) this;
     }
 
+    @Override
+    public <T extends Entity> ReactivePanacheQuery<T> withCollation(Collation collation) {
+        this.collation = collation;
+        return (ReactivePanacheQuery<T>) this;
+    }
+
     // Results
 
     @Override
@@ -220,6 +232,9 @@ public class ReactivePanacheQueryImpl<Entity> implements ReactivePanacheQuery<En
         if (projections != null) {
             options.projection(this.projections);
         }
+        if (this.collation != null) {
+            options.collation(collation);
+        }
         return options;
     }
 
@@ -234,6 +249,9 @@ public class ReactivePanacheQueryImpl<Entity> implements ReactivePanacheQuery<En
         }
         if (projections != null) {
             options.projection(this.projections);
+        }
+        if (this.collation != null) {
+            options.collation(collation);
         }
         return options.limit(maxResults);
     }

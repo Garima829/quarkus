@@ -3,7 +3,10 @@ package io.quarkus.bootstrap.app;
 import io.quarkus.bootstrap.BootstrapAppModelFactory;
 import io.quarkus.bootstrap.BootstrapException;
 import io.quarkus.bootstrap.model.AppArtifact;
+import io.quarkus.bootstrap.model.AppArtifactKey;
 import io.quarkus.bootstrap.model.AppDependency;
+import io.quarkus.bootstrap.model.AppModel;
+import io.quarkus.bootstrap.model.PathsCollection;
 import io.quarkus.bootstrap.resolver.AppModelResolver;
 import io.quarkus.bootstrap.resolver.maven.MavenArtifactResolver;
 import io.quarkus.bootstrap.resolver.update.DependenciesOrigin;
@@ -13,8 +16,11 @@ import java.io.Serializable;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Properties;
+import java.util.Set;
 
 /**
  * The entry point for starting/building a Quarkus application. This class sets up the base class loading
@@ -27,7 +33,7 @@ public class QuarkusBootstrap implements Serializable {
     /**
      * The root of the application, where the application classes live.
      */
-    private final Path applicationRoot;
+    private final PathsCollection applicationRoot;
 
     /**
      * The root of the project. This may be different to the application root for tests that
@@ -74,14 +80,14 @@ public class QuarkusBootstrap implements Serializable {
     private final MavenArtifactResolver mavenArtifactResolver;
     private final AppArtifact managingProject;
     private final List<AppDependency> forcedDependencies;
+    private final boolean disableClasspathCache;
+    private final AppModel existingModel;
+    private final boolean rebuild;
+    private final Set<AppArtifactKey> localArtifacts;
 
     private QuarkusBootstrap(Builder builder) {
         this.applicationRoot = builder.applicationRoot;
         this.additionalApplicationArchives = new ArrayList<>(builder.additionalApplicationArchives);
-        if (applicationRoot != null) {
-            // this path has to be added last to give a chance the test directories override the app properties, etc
-            additionalApplicationArchives.add(AdditionalDependency.test(applicationRoot));
-        }
         this.excludeFromClassPath = new ArrayList<>(builder.excludeFromClassPath);
         this.projectRoot = builder.projectRoot != null ? builder.projectRoot.normalize() : null;
         this.buildSystemProperties = builder.buildSystemProperties;
@@ -102,12 +108,19 @@ public class QuarkusBootstrap implements Serializable {
         this.mavenArtifactResolver = builder.mavenArtifactResolver;
         this.managingProject = builder.managingProject;
         this.forcedDependencies = new ArrayList<>(builder.forcedDependencies);
+        this.disableClasspathCache = builder.disableClasspathCache;
+        this.existingModel = builder.existingModel;
+        this.rebuild = builder.rebuild;
+        this.localArtifacts = new HashSet<>(builder.localArtifacts);
     }
 
     public CuratedApplication bootstrap() throws BootstrapException {
         //all we want to do is resolve all our dependencies
         //once we have this it is up to augment to set up the class loader to actually use them
 
+        if (existingModel != null) {
+            return new CuratedApplication(this, new CurationResult(existingModel));
+        }
         //first we check for updates
         if (mode != Mode.PROD) {
             if (versionUpdate != VersionUpdate.NONE) {
@@ -127,15 +140,19 @@ public class QuarkusBootstrap implements Serializable {
                 .setAppArtifact(appArtifact)
                 .setManagingProject(managingProject)
                 .setForcedDependencies(forcedDependencies)
-                .setProjectRoot(getProjectRoot() != null ? getProjectRoot()
-                        : getApplicationRoot());
+                .setLocalArtifacts(localArtifacts)
+                .setProjectRoot(getProjectRoot());
         if (mode == Mode.TEST || test) {
             appModelFactory.setTest(true);
-            appModelFactory.setEnableClasspathCache(true);
+            if (!disableClasspathCache) {
+                appModelFactory.setEnableClasspathCache(true);
+            }
         }
         if (mode == Mode.DEV) {
             appModelFactory.setDevMode(true);
-            appModelFactory.setEnableClasspathCache(true);
+            if (!disableClasspathCache) {
+                appModelFactory.setEnableClasspathCache(true);
+            }
         }
         return new CuratedApplication(this, appModelFactory.resolveAppModel());
     }
@@ -144,7 +161,7 @@ public class QuarkusBootstrap implements Serializable {
         return appModelResolver;
     }
 
-    public Path getApplicationRoot() {
+    public PathsCollection getApplicationRoot() {
         return applicationRoot;
     }
 
@@ -178,7 +195,7 @@ public class QuarkusBootstrap implements Serializable {
 
     @Deprecated
     public static Builder builder(Path applicationRoot) {
-        return new Builder(applicationRoot);
+        return new Builder().setApplicationRoot(PathsCollection.of(applicationRoot));
     }
 
     public String getBaseName() {
@@ -197,8 +214,13 @@ public class QuarkusBootstrap implements Serializable {
         return isolateDeployment;
     }
 
+    public boolean isRebuild() {
+        return rebuild;
+    }
+
     public static class Builder {
-        Path applicationRoot;
+        boolean rebuild;
+        PathsCollection applicationRoot;
         String baseName;
         Path projectRoot;
         ClassLoader baseClassLoader = ClassLoader.getSystemClassLoader();
@@ -220,16 +242,22 @@ public class QuarkusBootstrap implements Serializable {
         MavenArtifactResolver mavenArtifactResolver;
         AppArtifact managingProject;
         List<AppDependency> forcedDependencies = new ArrayList<>();
+        boolean disableClasspathCache;
+        AppModel existingModel;
+        final Set<AppArtifactKey> localArtifacts = new HashSet<>();
 
         public Builder() {
         }
 
-        @Deprecated
-        public Builder(Path applicationRoot) {
-            setApplicationRoot(applicationRoot);
+        public Builder setApplicationRoot(Path applicationRoot) {
+            this.applicationRoot = PathsCollection.of(applicationRoot);
+            return this;
         }
 
-        public Builder setApplicationRoot(Path applicationRoot) {
+        public Builder setApplicationRoot(PathsCollection applicationRoot) {
+            if (appArtifact != null) {
+                throw new IllegalStateException("Cannot set both app artifact and application root");
+            }
             this.applicationRoot = applicationRoot;
             return this;
         }
@@ -249,6 +277,9 @@ public class QuarkusBootstrap implements Serializable {
             return this;
         }
 
+        /**
+         * The project root, used only for project dependency discovery.
+         */
         public Builder setProjectRoot(Path projectRoot) {
             this.projectRoot = projectRoot;
             return this;
@@ -314,8 +345,24 @@ public class QuarkusBootstrap implements Serializable {
             return this;
         }
 
+        public Builder setDisableClasspathCache(boolean disableClasspathCache) {
+            this.disableClasspathCache = disableClasspathCache;
+            return this;
+        }
+
+        /**
+         * The app artifact. Note that if you want to use this as the basis of the application
+         * you must also explicitly set the application root to this artifacts paths.
+         */
         public Builder setAppArtifact(AppArtifact appArtifact) {
+            if (applicationRoot != null) {
+                throw new IllegalStateException("Cannot set both application root and app artifact");
+            }
             this.appArtifact = appArtifact;
+            this.applicationRoot = appArtifact.getPaths();
+            if (appArtifact.getPaths().isSinglePath()) {
+                this.projectRoot = appArtifact.getPaths().getSinglePath();
+            }
             return this;
         }
 
@@ -354,8 +401,31 @@ public class QuarkusBootstrap implements Serializable {
             return this;
         }
 
+        public AppModel getExistingModel() {
+            return existingModel;
+        }
+
+        public Builder setExistingModel(AppModel existingModel) {
+            this.existingModel = existingModel;
+            return this;
+        }
+
+        public Builder addLocalArtifact(AppArtifactKey key) {
+            localArtifacts.add(key);
+            return this;
+        }
+
         public QuarkusBootstrap build() {
+            Objects.requireNonNull(applicationRoot, "Application root must not be null");
+            if (appArtifact != null) {
+                localArtifacts.add(appArtifact.getKey());
+            }
             return new QuarkusBootstrap(this);
+        }
+
+        public Builder setRebuild(boolean value) {
+            this.rebuild = value;
+            return this;
         }
     }
 

@@ -119,7 +119,7 @@ Use the following command to recursively delete the `com.apple.quarantine` exten
 
 [source,shell]
 -----
-xattr -r -d com.apple.quarantine $HOME/Development/graalvm/
+xattr -r -d com.apple.quarantine ${GRAALVM_HOME}
 -----
 ====
 
@@ -205,9 +205,11 @@ In the `pom.xml` file, the `native` profile contains:
                 <goal>verify</goal>
             </goals>
             <configuration>
-                <systemProperties>
+                <systemPropertyVariables>
                     <native.image.path>${project.build.directory}/${project.build.finalName}-runner</native.image.path>
-                </systemProperties>
+                    <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
+                    <maven.home>${maven.home}</maven.home>
+                </systemPropertyVariables>
             </configuration>
         </execution>
     </executions>
@@ -299,7 +301,7 @@ target directory you can specify the executable with the `-Dnative.image.path=` 
 == Creating a container
 
 IMPORTANT: Before going further, be sure to have a working container runtime (Docker, podman) environment. If you use Docker 
-on Windows you should share your project's drive at Docker Desktop file share settings.
+on Windows you should share your project's drive at Docker Desktop file share settings and restart Docker Desktop.
 
 You can run the application in a container using the JAR produced by the Quarkus Maven Plugin.
 However, in this guide we focus on creating a container image using the produced native executable.

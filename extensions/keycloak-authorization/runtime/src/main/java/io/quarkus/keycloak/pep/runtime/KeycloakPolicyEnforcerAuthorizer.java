@@ -71,7 +71,7 @@ public class KeycloakPolicyEnforcerAuthorizer
                         if (context != null) {
                             String scopes = permission.getActions();
 
-                            if (scopes == null) {
+                            if (scopes == null || "".equals(scopes)) {
                                 return Uni.createFrom().item(context.hasResourcePermission(permission.getName()));
                             }
 
@@ -147,8 +147,7 @@ public class KeycloakPolicyEnforcerAuthorizer
             PolicyEnforcerConfig enforcerConfig = new PolicyEnforcerConfig();
 
             enforcerConfig.setLazyLoadPaths(config.policyEnforcer.lazyLoadPaths);
-            enforcerConfig.setEnforcementMode(
-                    PolicyEnforcerConfig.EnforcementMode.valueOf(config.policyEnforcer.enforcementMode));
+            enforcerConfig.setEnforcementMode(config.policyEnforcer.enforcementMode);
             enforcerConfig.setHttpMethodAsScope(config.policyEnforcer.httpMethodAsScope);
 
             KeycloakPolicyEnforcerConfig.KeycloakConfigPolicyEnforcer.PathCacheConfig pathCache = config.policyEnforcer.pathCache;

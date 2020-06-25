@@ -17,9 +17,13 @@ import java.util.Enumeration;
 import java.util.List;
 import java.util.ServiceLoader;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.jar.Attributes;
 import java.util.jar.Manifest;
+import java.util.logging.LogManager;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 import java.util.stream.Stream;
 
 import org.jboss.shrinkwrap.api.exporter.ExplodedExporter;
@@ -31,6 +35,7 @@ import org.junit.jupiter.api.extension.TestInstanceFactory;
 import org.junit.jupiter.api.extension.TestInstanceFactoryContext;
 import org.junit.jupiter.api.extension.TestInstantiationException;
 
+import io.quarkus.bootstrap.model.AppArtifactKey;
 import io.quarkus.deployment.dev.CompilationProvider;
 import io.quarkus.deployment.dev.DevModeContext;
 import io.quarkus.deployment.dev.DevModeMain;
@@ -57,19 +62,24 @@ import io.quarkus.test.common.http.TestHTTPResourceManager;
 public class QuarkusDevModeTest
         implements BeforeEachCallback, AfterEachCallback, TestInstanceFactory {
 
+    private static final Logger rootLogger;
+
     static {
         System.setProperty("java.util.logging.manager", "org.jboss.logmanager.LogManager");
+        rootLogger = LogManager.getLogManager().getLogger("");
     }
 
     private DevModeMain devModeMain;
     private Path deploymentDir;
     private Supplier<JavaArchive> archiveProducer;
     private String logFileName;
+    private InMemoryLogHandler inMemoryLogHandler = new InMemoryLogHandler((r) -> false);
 
     private Path deploymentSourcePath;
     private Path deploymentResourcePath;
     private Path projectSourceRoot;
     private Path testLocation;
+    private String[] commandLineArgs = new String[0];
 
     private static final List<CompilationProvider> compilationProviders;
 
@@ -95,6 +105,15 @@ public class QuarkusDevModeTest
         return this;
     }
 
+    public QuarkusDevModeTest setLogRecordPredicate(Predicate<LogRecord> predicate) {
+        this.inMemoryLogHandler = new InMemoryLogHandler(predicate);
+        return this;
+    }
+
+    public List<LogRecord> getLogRecords() {
+        return inMemoryLogHandler.records;
+    }
+
     public Object createTestInstance(TestInstanceFactoryContext factoryContext, ExtensionContext extensionContext)
             throws TestInstantiationException {
         try {
@@ -108,6 +127,7 @@ public class QuarkusDevModeTest
 
     @Override
     public void beforeEach(ExtensionContext extensionContext) throws Exception {
+        rootLogger.addHandler(inMemoryLogHandler);
         if (archiveProducer == null) {
             throw new RuntimeException("QuarkusDevModeTest does not have archive producer set");
         }
@@ -120,6 +140,7 @@ public class QuarkusDevModeTest
         ExtensionContext.Store store = extensionContext.getRoot().getStore(ExtensionContext.Namespace.GLOBAL);
         if (store.get(TestResourceManager.class.getName()) == null) {
             TestResourceManager manager = new TestResourceManager(extensionContext.getRequiredTestClass());
+            manager.init();
             manager.start();
             store.put(TestResourceManager.class.getName(), new ExtensionContext.Store.CloseableResource() {
 
@@ -147,6 +168,7 @@ public class QuarkusDevModeTest
             }
 
             DevModeContext context = exportArchive(deploymentDir, projectSourceRoot);
+            context.setArgs(commandLineArgs);
             context.setTest(true);
             context.setAbortOnFailedStart(true);
             context.getBuildSystemProperties().put("quarkus.banner.enabled", "false");
@@ -170,6 +192,7 @@ public class QuarkusDevModeTest
                 FileUtil.deleteDirectory(deploymentDir);
             }
         }
+        rootLogger.removeHandler(inMemoryLogHandler);
     }
 
     private DevModeContext exportArchive(Path deploymentDir, Path testSourceDir) {
@@ -220,10 +243,10 @@ public class QuarkusDevModeTest
 
             DevModeContext context = new DevModeContext();
             context.setCacheDir(cache.toFile());
-            context.getClassesRoots().add(classes.toFile());
 
-            context.getModules()
-                    .add(new DevModeContext.ModuleInfo("default", deploymentDir.toAbsolutePath().toString(),
+            context.setApplicationRoot(
+                    new DevModeContext.ModuleInfo(AppArtifactKey.fromString("io.quarkus.test:app-under-test"), "default",
+                            deploymentDir.toAbsolutePath().toString(),
                             Collections.singleton(deploymentSourcePath.toAbsolutePath().toString()),
                             classes.toAbsolutePath().toString(), deploymentResourcePath.toAbsolutePath().toString()));
 
@@ -323,6 +346,15 @@ public class QuarkusDevModeTest
         sleepForFileChanges(path);
         // since this is a new file addition, even wait for the parent dir's last modified timestamp to change
         sleepForFileChanges(path.getParent());
+    }
+
+    public String[] getCommandLineArgs() {
+        return commandLineArgs;
+    }
+
+    public QuarkusDevModeTest setCommandLineArgs(String[] commandLineArgs) {
+        this.commandLineArgs = commandLineArgs;
+        return this;
     }
 
     void modifyFile(String name, Function<String, String> mutator, Path path) {

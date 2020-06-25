@@ -18,6 +18,7 @@ import io.quarkus.amazon.common.runtime.SyncHttpClientConfig;
 import io.quarkus.arc.deployment.BeanRegistrationPhaseBuildItem;
 import io.quarkus.arc.processor.BuildExtension;
 import io.quarkus.arc.processor.InjectionPointInfo;
+import io.quarkus.deployment.Feature;
 import io.quarkus.deployment.annotations.BuildProducer;
 import io.quarkus.deployment.builditem.ExtensionSslNativeSupportBuildItem;
 import io.quarkus.deployment.builditem.FeatureBuildItem;
@@ -29,7 +30,7 @@ import software.amazon.awssdk.http.async.SdkAsyncHttpClient;
 
 abstract public class AbstractAmazonServiceProcessor {
 
-    abstract protected String amazonServiceClientName();
+    abstract protected Feature amazonServiceClientName();
 
     abstract protected String configName();
 
@@ -78,29 +79,29 @@ abstract public class AbstractAmazonServiceProcessor {
             RuntimeValue<NettyHttpClientConfig> asyncConfig,
             BuildProducer<AmazonClientTransportsBuildItem> clientTransports) {
 
-        Optional<AmazonClientBuildItem> dynamoBuildItem = amazonClients.stream()
+        Optional<AmazonClientBuildItem> matchingClientBuildItem = amazonClients.stream()
                 .filter(c -> c.getAwsClientName().equals(configName()))
                 .findAny();
 
-        dynamoBuildItem.ifPresent(dynamoClient -> {
+        matchingClientBuildItem.ifPresent(client -> {
             RuntimeValue<SdkHttpClient.Builder> syncTransport = null;
             RuntimeValue<SdkAsyncHttpClient.Builder> asyncTransport = null;
 
-            if (dynamoClient.getSyncClassName().isPresent()) {
+            if (client.getSyncClassName().isPresent()) {
                 syncTransport = recorder.configureSync(configName(), buildSyncConfig,
                         syncConfig);
             }
 
-            if (dynamoClient.getAsyncClassName().isPresent()) {
+            if (client.getAsyncClassName().isPresent()) {
                 asyncTransport = recorder.configureAsync(configName(), asyncConfig);
             }
 
             clientTransports.produce(
                     new AmazonClientTransportsBuildItem(
-                            dynamoClient.getSyncClassName(), dynamoClient.getAsyncClassName(),
+                            client.getSyncClassName(), client.getAsyncClassName(),
                             syncTransport,
                             asyncTransport,
-                            dynamoClient.getAwsClientName()));
+                            client.getAwsClientName()));
         });
 
     }
@@ -145,11 +146,11 @@ abstract public class AbstractAmazonServiceProcessor {
             RuntimeValue<AwsConfig> awsConfigRuntime,
             RuntimeValue<SdkConfig> sdkConfigRuntime, SdkBuildTimeConfig sdkBuildConfig,
             BuildProducer<AmazonClientBuilderConfiguredBuildItem> producer) {
-        Optional<AmazonClientBuilderBuildItem> dynamoBuildItem = clients.stream()
+        Optional<AmazonClientBuilderBuildItem> matchingClientBuilderBuildItem = clients.stream()
                 .filter(c -> c.getAwsClientName().equals(configName()))
                 .findAny();
 
-        dynamoBuildItem.ifPresent(client -> {
+        matchingClientBuilderBuildItem.ifPresent(client -> {
             RuntimeValue<? extends AwsClientBuilder> syncBuilder = null;
             RuntimeValue<? extends AwsClientBuilder> asyncBuilder = null;
 

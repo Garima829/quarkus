@@ -5,7 +5,10 @@ import static io.quarkus.gizmo.MethodDescriptor.ofMethod;
 
 import java.io.File;
 import java.lang.reflect.Modifier;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -19,9 +22,13 @@ import org.jboss.jandex.AnnotationInstance;
 import org.jboss.jandex.AnnotationValue;
 import org.jboss.jandex.ClassInfo;
 import org.jboss.jandex.DotName;
+import org.jboss.jandex.MethodInfo;
+import org.jboss.jandex.Type;
 import org.jboss.logging.Logger;
 import org.jboss.logmanager.handlers.DelayedHandler;
 
+import io.quarkus.bootstrap.logging.InitialConfigurator;
+import io.quarkus.bootstrap.runner.Timing;
 import io.quarkus.builder.Version;
 import io.quarkus.deployment.GeneratedClassGizmoAdaptor;
 import io.quarkus.deployment.annotations.BuildProducer;
@@ -39,12 +46,13 @@ import io.quarkus.deployment.builditem.LiveReloadBuildItem;
 import io.quarkus.deployment.builditem.MainBytecodeRecorderBuildItem;
 import io.quarkus.deployment.builditem.MainClassBuildItem;
 import io.quarkus.deployment.builditem.ObjectSubstitutionBuildItem;
-import io.quarkus.deployment.builditem.SslTrustStoreSystemPropertyBuildItem;
+import io.quarkus.deployment.builditem.QuarkusApplicationClassBuildItem;
 import io.quarkus.deployment.builditem.StaticBytecodeRecorderBuildItem;
 import io.quarkus.deployment.builditem.SystemPropertyBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.ReflectiveClassBuildItem;
 import io.quarkus.deployment.configuration.RunTimeConfigurationGenerator;
 import io.quarkus.deployment.pkg.PackageConfig;
+import io.quarkus.deployment.pkg.builditem.AppCDSRequestedBuildItem;
 import io.quarkus.deployment.recording.BytecodeRecorderImpl;
 import io.quarkus.dev.appstate.ApplicationStateNotification;
 import io.quarkus.gizmo.BytecodeCreator;
@@ -57,24 +65,34 @@ import io.quarkus.gizmo.MethodDescriptor;
 import io.quarkus.gizmo.ResultHandle;
 import io.quarkus.gizmo.TryBlock;
 import io.quarkus.runtime.Application;
+import io.quarkus.runtime.ApplicationLifecycleManager;
 import io.quarkus.runtime.LaunchMode;
 import io.quarkus.runtime.NativeImageRuntimePropertiesRecorder;
 import io.quarkus.runtime.Quarkus;
 import io.quarkus.runtime.QuarkusApplication;
 import io.quarkus.runtime.StartupContext;
 import io.quarkus.runtime.StartupTask;
-import io.quarkus.runtime.Timing;
 import io.quarkus.runtime.annotations.QuarkusMain;
+import io.quarkus.runtime.appcds.AppCDSUtil;
 import io.quarkus.runtime.configuration.ProfileManager;
-import io.quarkus.runtime.logging.InitialConfigurator;
 
-class MainClassBuildStep {
+public class MainClassBuildStep {
 
     static final String MAIN_CLASS = "io.quarkus.runner.GeneratedMain";
     static final String STARTUP_CONTEXT = "STARTUP_CONTEXT";
     static final String LOG = "LOG";
     static final String JAVA_LIBRARY_PATH = "java.library.path";
-    static final String JAVAX_NET_SSL_TRUST_STORE = "javax.net.ssl.trustStore";
+
+    private static final String JAVAX_NET_SSL_TRUST_STORE = "javax.net.ssl.trustStore";
+    private static final String JAVAX_NET_SSL_TRUST_STORE_TYPE = "javax.net.ssl.trustStoreType";
+    private static final String JAVAX_NET_SSL_TRUST_STORE_PROVIDER = "javax.net.ssl.trustStoreProvider";
+    private static final String JAVAX_NET_SSL_TRUST_STORE_PASSWORD = "javax.net.ssl.trustStorePassword";
+    private static final List<String> BUILD_TIME_TRUST_STORE_PROPERTIES = Collections.unmodifiableList(Arrays.asList(
+            JAVAX_NET_SSL_TRUST_STORE,
+            JAVAX_NET_SSL_TRUST_STORE_TYPE, JAVAX_NET_SSL_TRUST_STORE_PROVIDER,
+            JAVAX_NET_SSL_TRUST_STORE_PASSWORD));
+
+    public static final String GENERATE_APP_CDS_SYSTEM_PROPERTY = "quarkus.appcds.generate";
 
     private static final FieldDescriptor STARTUP_CONTEXT_FIELD = FieldDescriptor.of(Application.APP_CLASS_NAME, STARTUP_CONTEXT,
             StartupContext.class);
@@ -85,14 +103,14 @@ class MainClassBuildStep {
             List<MainBytecodeRecorderBuildItem> mainMethod,
             List<SystemPropertyBuildItem> properties,
             List<JavaLibraryPathAdditionalPathBuildItem> javaLibraryPathAdditionalPaths,
-            Optional<SslTrustStoreSystemPropertyBuildItem> sslTrustStoreSystemProperty,
             List<FeatureBuildItem> features,
             BuildProducer<ApplicationClassNameBuildItem> appClassNameProducer,
             List<BytecodeRecorderObjectLoaderBuildItem> loaders,
             BuildProducer<GeneratedClassBuildItem> generatedClass,
             LaunchModeBuildItem launchMode,
             LiveReloadBuildItem liveReloadBuildItem,
-            ApplicationInfoBuildItem applicationInfo) {
+            ApplicationInfoBuildItem applicationInfo,
+            Optional<AppCDSRequestedBuildItem> appCDSRequested) {
 
         appClassNameProducer.produce(new ApplicationClassNameBuildItem(Application.APP_CLASS_NAME));
 
@@ -154,6 +172,21 @@ class MainClassBuildStep {
         mv = file.getMethodCreator("doStart", void.class, String[].class);
         mv.setModifiers(Modifier.PROTECTED | Modifier.FINAL);
 
+        // if AppCDS generation was requested, we ensure that the application simply loads some classes from a file and terminates
+        if (appCDSRequested.isPresent()) {
+            ResultHandle createAppCDsSysProp = mv.invokeStaticMethod(
+                    ofMethod(System.class, "getProperty", String.class, String.class, String.class),
+                    mv.load(GENERATE_APP_CDS_SYSTEM_PROPERTY), mv.load("false"));
+            ResultHandle createAppCDSBool = mv.invokeStaticMethod(
+                    ofMethod(Boolean.class, "parseBoolean", boolean.class, String.class), createAppCDsSysProp);
+            BytecodeCreator createAppCDS = mv.ifTrue(createAppCDSBool).trueBranch();
+
+            createAppCDS.invokeStaticMethod(ofMethod(AppCDSUtil.class, "loadGeneratedClasses", void.class));
+
+            createAppCDS.invokeStaticMethod(ofMethod(ApplicationLifecycleManager.class, "exit", void.class));
+            createAppCDS.returnValue(null);
+        }
+
         // very first thing is to set system props (for run time, which use substitutions for a different
         // storage from build-time)
         for (SystemPropertyBuildItem i : properties) {
@@ -182,19 +215,24 @@ class MainClassBuildStep {
                     mv.invokeVirtualMethod(ofMethod(StringBuilder.class, "toString", String.class), javaLibraryPath));
         }
 
-        if (sslTrustStoreSystemProperty.isPresent()) {
-            ResultHandle alreadySetTrustStore = mv.invokeStaticMethod(
+        BytecodeCreator inGraalVMCode = mv
+                .ifNonZero(mv.invokeStaticMethod(ofMethod(ImageInfo.class, "inImageRuntimeCode", boolean.class)))
+                .trueBranch();
+
+        // GraalVM uses the build-time trustStore and bakes the backing classes of the TrustStore into the the native binary,
+        // so we need to warn users trying to set the trust store related system properties that it won't have an effect
+        for (String property : BUILD_TIME_TRUST_STORE_PROPERTIES) {
+            ResultHandle trustStoreSystemProp = inGraalVMCode.invokeStaticMethod(
                     ofMethod(System.class, "getProperty", String.class, String.class),
-                    mv.load(JAVAX_NET_SSL_TRUST_STORE));
+                    mv.load(property));
 
-            BytecodeCreator inGraalVMCode = mv
-                    .ifNonZero(mv.invokeStaticMethod(ofMethod(ImageInfo.class, "inImageRuntimeCode", boolean.class)))
-                    .trueBranch();
-
-            inGraalVMCode.ifNull(alreadySetTrustStore).trueBranch().invokeStaticMethod(
-                    ofMethod(System.class, "setProperty", String.class, String.class, String.class),
-                    inGraalVMCode.load(JAVAX_NET_SSL_TRUST_STORE),
-                    inGraalVMCode.load(sslTrustStoreSystemProperty.get().getPath()));
+            BytecodeCreator inGraalVMCodeAndTrustStoreSet = inGraalVMCode.ifNull(trustStoreSystemProp).falseBranch();
+            inGraalVMCodeAndTrustStoreSet.invokeVirtualMethod(
+                    ofMethod(Logger.class, "warn", void.class, Object.class),
+                    inGraalVMCodeAndTrustStoreSet.readStaticField(logField.getFieldDescriptor()),
+                    inGraalVMCodeAndTrustStoreSet.load(String.format(
+                            "Setting the '%s' system property will not have any effect at runtime. Make sure to set this property at build time (for example by setting 'quarkus.native.additional-build-args=-J-D%s=someValue').",
+                            property, property)));
         }
 
         mv.invokeStaticMethod(ofMethod(Timing.class, "mainStarted", void.class));
@@ -213,10 +251,15 @@ class MainClassBuildStep {
         }
 
         // Startup log messages
-        ResultHandle featuresHandle = tryBlock.load(features.stream()
-                .map(f -> f.getInfo())
-                .sorted()
-                .collect(Collectors.joining(", ")));
+        List<String> featureNames = new ArrayList<>();
+        for (FeatureBuildItem feature : features) {
+            if (featureNames.contains(feature.getName())) {
+                throw new IllegalStateException(
+                        "Multiple extensions registered a feature of the same name: " + feature.getName());
+            }
+            featureNames.add(feature.getName());
+        }
+        ResultHandle featuresHandle = tryBlock.load(featureNames.stream().sorted().collect(Collectors.joining(", ")));
         ResultHandle activeProfile = tryBlock
                 .invokeStaticMethod(ofMethod(ProfileManager.class, "getActiveProfile", String.class));
         tryBlock.invokeStaticMethod(
@@ -228,7 +271,6 @@ class MainClassBuildStep {
                 featuresHandle,
                 activeProfile,
                 tryBlock.load(LaunchMode.DEVELOPMENT.equals(launchMode.getLaunchMode())));
-
         cb = tryBlock.addCatch(Throwable.class);
         cb.invokeVirtualMethod(ofMethod(Logger.class, "error", void.class, Object.class, Throwable.class),
                 cb.readStaticField(logField.getFieldDescriptor()), cb.load("Failed to start application"),
@@ -270,6 +312,7 @@ class MainClassBuildStep {
     public MainClassBuildItem mainClassBuildStep(BuildProducer<GeneratedClassBuildItem> generatedClass,
             ApplicationArchivesBuildItem applicationArchivesBuildItem,
             CombinedIndexBuildItem combinedIndexBuildItem,
+            Optional<QuarkusApplicationClassBuildItem> quarkusApplicationClass,
             PackageConfig packageConfig) {
         String mainClassName = MAIN_CLASS;
         Map<String, String> quarkusMainAnnotations = new HashMap<>();
@@ -300,44 +343,68 @@ class MainClassBuildStep {
             mainClassName = quarkusMainAnnotations.get("");
         }
         if (mainClassName.equals(MAIN_CLASS)) {
-            //generate a main that just runs the app, the user has not supplied a main class
-            ClassCreator file = new ClassCreator(new GeneratedClassGizmoAdaptor(generatedClass, true), MAIN_CLASS, null,
-                    Object.class.getName());
-
-            MethodCreator mv = file.getMethodCreator("main", void.class, String[].class);
-            mv.setModifiers(Modifier.PUBLIC | Modifier.STATIC);
-            mv.invokeStaticMethod(MethodDescriptor.ofMethod(Quarkus.class, "run", void.class, String[].class),
-                    mv.getMethodParam(0));
-            mv.returnValue(null);
-
-            file.close();
-        } else {
-            Collection<ClassInfo> impls = combinedIndexBuildItem.getIndex()
-                    .getAllKnownImplementors(DotName.createSimple(QuarkusApplication.class.getName()));
-            boolean found = false;
-            for (ClassInfo i : impls) {
-                if (i.name().toString().equals(mainClassName)) {
-                    found = true;
-                    break;
-                }
-            }
-            if (found) {
-                //this is QuarkusApplication, generate a real main to run it
+            if (quarkusApplicationClass.isPresent()) {
+                //user has not supplied main class, but extension did.
+                generateMainForQuarkusApplication(quarkusApplicationClass.get().getClassName(), generatedClass);
+            } else {
+                //generate a main that just runs the app, the user has not supplied a main class
                 ClassCreator file = new ClassCreator(new GeneratedClassGizmoAdaptor(generatedClass, true), MAIN_CLASS, null,
                         Object.class.getName());
 
                 MethodCreator mv = file.getMethodCreator("main", void.class, String[].class);
                 mv.setModifiers(Modifier.PUBLIC | Modifier.STATIC);
-                mv.invokeStaticMethod(MethodDescriptor.ofMethod(Quarkus.class, "run", void.class, Class.class, String[].class),
-                        mv.loadClass(mainClassName),
+                mv.invokeStaticMethod(MethodDescriptor.ofMethod(Quarkus.class, "run", void.class, String[].class),
                         mv.getMethodParam(0));
                 mv.returnValue(null);
+
                 file.close();
-                mainClassName = MAIN_CLASS;
+            }
+        } else {
+            Collection<ClassInfo> impls = combinedIndexBuildItem.getIndex()
+                    .getAllKnownImplementors(DotName.createSimple(QuarkusApplication.class.getName()));
+            ClassInfo classByName = combinedIndexBuildItem.getIndex().getClassByName(DotName.createSimple(mainClassName));
+            MethodInfo mainClassMethod = null;
+            if (classByName != null) {
+                mainClassMethod = classByName
+                        .method("main", Type.create(DotName.createSimple(String[].class.getName()), Type.Kind.ARRAY));
+            }
+            if (mainClassMethod == null) {
+                boolean found = false;
+                for (ClassInfo i : impls) {
+                    if (i.name().toString().equals(mainClassName)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) {
+                    //this is QuarkusApplication, generate a real main to run it
+                    generateMainForQuarkusApplication(mainClassName, generatedClass);
+                    mainClassName = MAIN_CLASS;
+                } else {
+                    ClassInfo classInfo = combinedIndexBuildItem.getIndex().getClassByName(DotName.createSimple(mainClassName));
+                    if (classInfo == null) {
+                        throw new IllegalArgumentException("The supplied 'main-class' value of '" + mainClassName
+                                + "' does not correspond to either a fully qualified class name or a matching 'name' field of one of the '@QuarkusMain' annotations");
+                    }
+                }
             }
         }
 
         return new MainClassBuildItem(mainClassName);
+    }
+
+    private void generateMainForQuarkusApplication(String quarkusApplicationClassName,
+            BuildProducer<GeneratedClassBuildItem> generatedClass) {
+        ClassCreator file = new ClassCreator(new GeneratedClassGizmoAdaptor(generatedClass, true), MAIN_CLASS, null,
+                Object.class.getName());
+
+        MethodCreator mv = file.getMethodCreator("main", void.class, String[].class);
+        mv.setModifiers(Modifier.PUBLIC | Modifier.STATIC);
+        mv.invokeStaticMethod(MethodDescriptor.ofMethod(Quarkus.class, "run", void.class, Class.class, String[].class),
+                mv.loadClass(quarkusApplicationClassName),
+                mv.getMethodParam(0));
+        mv.returnValue(null);
+        file.close();
     }
 
     private void writeRecordedBytecode(BytecodeRecorderImpl recorder, String fallbackGeneratedStartupTaskClassName,

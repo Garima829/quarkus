@@ -57,6 +57,24 @@ cd microprofile-health-quickstart
 This command generates a Maven project, importing the `smallrye-health` extension 
 which is an implementation of the MicroProfile Health specification used in Quarkus.
 
+If you already have your Quarkus project configured, you can add the `smallrye-health` extension
+to your project by running the following command in your project base directory:
+
+[source,bash]
+----
+./mvnw quarkus:add-extension -Dextensions="smallrye-health"
+----
+
+This will add the following to your `pom.xml`:
+
+[source,xml]
+----
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-smallrye-health</artifactId>
+</dependency>
+----
+
 == Running the health check
 
 Importing the `smallrye-health` extension directly exposes three REST endpoints:
@@ -97,7 +115,7 @@ import org.eclipse.microprofile.health.Liveness;
 import javax.enterprise.context.ApplicationScoped;
 
 @Liveness
-@ApplicationScoped
+@ApplicationScoped <1> <2>
 public class SimpleHealthCheck implements HealthCheck {
 
     @Override
@@ -106,10 +124,10 @@ public class SimpleHealthCheck implements HealthCheck {
     }
 }
 ----
+<1> It's recommended to annotate the health check class with `@ApplicationScoped` or the `@Singleton` scope so that a single bean instance is used for all health check requests. 
+<2> If a bean class annotated with one of the health check annotations declares no scope then the `@Singleton` scope is used automatically.
 
-As you can see health check procedures are defined as implementations of the 
-`HealthCheck` interface which are defined as CDI beans with the one of the 
-following CDI qualifiers: 
+As you can see, the health check procedures are defined as CDI beans that implement the `HealthCheck` interface and are annotated with one of the health check qualifiers, such as: 
 
 - `@Liveness` - the liveness check accessible at `/health/live`
 - `@Readiness` - the readiness check accessible at `/health/ready`

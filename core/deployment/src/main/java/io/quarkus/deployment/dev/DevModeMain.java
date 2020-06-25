@@ -21,6 +21,8 @@ import org.jboss.logging.Logger;
 import io.quarkus.bootstrap.app.AdditionalDependency;
 import io.quarkus.bootstrap.app.CuratedApplication;
 import io.quarkus.bootstrap.app.QuarkusBootstrap;
+import io.quarkus.bootstrap.model.AppArtifactKey;
+import io.quarkus.bootstrap.model.PathsCollection;
 import io.quarkus.dev.appstate.ApplicationStateNotification;
 
 /**
@@ -79,23 +81,38 @@ public class DevModeMain implements Closeable {
                     }
                 }
             }
+            final PathsCollection.Builder appRoots = PathsCollection.builder();
+            Path p = Paths.get(context.getApplicationRoot().getClassesPath());
+            if (Files.exists(p)) {
+                appRoots.add(p);
+            }
+            if (context.getApplicationRoot().getResourcesOutputPath() != null
+                    && !context.getApplicationRoot().getResourcesOutputPath()
+                            .equals(context.getApplicationRoot().getClassesPath())) {
+                p = Paths.get(context.getApplicationRoot().getResourcesOutputPath());
+                if (Files.exists(p)) {
+                    appRoots.add(p);
+                }
+            }
+
             QuarkusBootstrap.Builder bootstrapBuilder = QuarkusBootstrap.builder()
-                    .setApplicationRoot(context.getClassesRoots().get(0).toPath())
+                    .setApplicationRoot(appRoots.build())
+                    .setTargetDirectory(context.getDevModeRunnerJarFile().getParentFile().toPath())
                     .setIsolateDeployment(true)
                     .setLocalProjectDiscovery(context.isLocalProjectDiscovery())
                     .addAdditionalDeploymentArchive(path)
-                    .setMode(QuarkusBootstrap.Mode.DEV);
+                    .setBaseName(context.getBaseName())
+                    .setMode(context.getMode());
             if (context.getProjectDir() != null) {
                 bootstrapBuilder.setProjectRoot(context.getProjectDir().toPath());
             } else {
                 bootstrapBuilder.setProjectRoot(new File(".").toPath());
             }
-            for (int i = 1; i < context.getClassesRoots().size(); ++i) {
-                bootstrapBuilder.addAdditionalApplicationArchive(
-                        new AdditionalDependency(context.getClassesRoots().get(i).toPath(), false, false));
+            for (AppArtifactKey i : context.getLocalArtifacts()) {
+                bootstrapBuilder.addLocalArtifact(i);
             }
 
-            for (DevModeContext.ModuleInfo i : context.getModules()) {
+            for (DevModeContext.ModuleInfo i : context.getAllModules()) {
                 if (i.getClassesPath() != null) {
                     Path classesPath = Paths.get(i.getClassesPath());
                     bootstrapBuilder.addAdditionalApplicationArchive(new AdditionalDependency(classesPath, true, false));
@@ -112,10 +129,12 @@ public class DevModeMain implements Closeable {
             buildSystemProperties.putAll(context.getBuildSystemProperties());
             bootstrapBuilder.setBuildSystemProperties(buildSystemProperties);
             curatedApplication = bootstrapBuilder.setTest(context.isTest()).build().bootstrap();
-            realCloseable = (Closeable) curatedApplication.runInAugmentClassLoader(IsolatedDevModeMain.class.getName(),
+            realCloseable = (Closeable) curatedApplication.runInAugmentClassLoader(
+                    context.getAlternateEntryPoint() == null ? IsolatedDevModeMain.class.getName()
+                            : context.getAlternateEntryPoint(),
                     Collections.singletonMap(DevModeContext.class.getName(), context));
         } catch (Throwable t) {
-            log.error("Quarkus dev mode failed to start in curation phase", t);
+            log.error("Quarkus dev mode failed to start", t);
             throw new RuntimeException(t);
             //System.exit(1);
         }
@@ -162,6 +181,8 @@ public class DevModeMain implements Closeable {
         if (realCloseable != null) {
             realCloseable.close();
         }
-        ApplicationStateNotification.waitForApplicationStop();
+        if (ApplicationStateNotification.getState() == ApplicationStateNotification.State.STARTED) {
+            ApplicationStateNotification.waitForApplicationStop();
+        }
     }
 }

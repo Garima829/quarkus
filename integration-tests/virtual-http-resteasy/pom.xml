@@ -24,6 +24,10 @@
             <artifactId>quarkus-azure-functions-http</artifactId>
         </dependency>
         <dependency>
+            <groupId>io.quarkus</groupId>
+            <artifactId>quarkus-smallrye-openapi</artifactId>
+        </dependency>
+        <dependency>
             <groupId>com.microsoft.azure.functions</groupId>
             <artifactId>azure-functions-java-library</artifactId>
             <scope>test</scope>
@@ -80,9 +84,9 @@
                                     <goal>verify</goal>
                                 </goals>
                                 <configuration>
-                                    <systemProperties>
+                                    <systemPropertyVariables>
                                         <native.image.path>${project.build.directory}/${project.build.finalName}-runner</native.image.path>
-                                    </systemProperties>
+                                    </systemPropertyVariables>
                                 </configuration>
                             </execution>
                         </executions>

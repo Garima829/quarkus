@@ -1,5 +1,6 @@
 package io.quarkus.arc.processor;
 
+import static io.quarkus.arc.processor.BeanProcessor.initAndSort;
 import static io.quarkus.arc.processor.IndexClassLookupUtils.getClassByName;
 
 import io.quarkus.arc.processor.BeanDeploymentValidator.ValidationContext;
@@ -49,6 +50,8 @@ public class BeanDeployment {
 
     private static final Logger LOGGER = Logger.getLogger(BeanDeployment.class);
 
+    private static final int ANNOTATION = 0x00002000;
+
     static final EnumSet<Type.Kind> CLASS_TYPES = EnumSet.of(Type.Kind.CLASS, Type.Kind.PARAMETERIZED_TYPE);
 
     private final BuildContextImpl buildContext;
@@ -88,51 +91,41 @@ public class BeanDeployment {
     private final List<InjectionPointInfo> injectionPoints;
 
     private final boolean removeUnusedBeans;
+
     private final List<Predicate<BeanInfo>> unusedExclusions;
+
     private final Set<BeanInfo> removedBeans;
 
     private final Map<ScopeInfo, Function<MethodCreator, ResultHandle>> customContexts;
 
     private final Collection<BeanDefiningAnnotation> beanDefiningAnnotations;
+
     final boolean transformUnproxyableClasses;
+
     private final boolean jtaCapabilities;
 
     private final AlternativePriorities alternativePriorities;
 
-    BeanDeployment(IndexView index, Collection<BeanDefiningAnnotation> additionalBeanDefiningAnnotations,
-            List<AnnotationsTransformer> annotationTransformers) {
-        this(index, additionalBeanDefiningAnnotations, annotationTransformers, Collections.emptyList(), Collections.emptyList(),
-                Collections.emptyList(),
-                null, false, null, Collections.emptyMap(), Collections.emptyList(), false, false, null);
-    }
+    private final List<Predicate<ClassInfo>> excludeTypes;
 
-    BeanDeployment(IndexView index, Collection<BeanDefiningAnnotation> additionalBeanDefiningAnnotations,
-            List<AnnotationsTransformer> annotationTransformers,
-            List<InjectionPointsTransformer> injectionPointsTransformers,
-            List<ObserverTransformer> observerTransformers,
-            Collection<DotName> resourceAnnotations,
-            BuildContextImpl buildContext, boolean removeUnusedBeans, List<Predicate<BeanInfo>> unusedExclusions,
-            Map<DotName, Collection<AnnotationInstance>> additionalStereotypes,
-            List<InterceptorBindingRegistrar> bindingRegistrars,
-            boolean transformUnproxyableClasses,
-            boolean jtaCapabilities,
-            AlternativePriorities alternativePriorities) {
+    BeanDeployment(IndexView index, BuildContextImpl buildContext, BeanProcessor.Builder builder) {
         this.buildContext = buildContext;
         Set<BeanDefiningAnnotation> beanDefiningAnnotations = new HashSet<>();
-        if (additionalBeanDefiningAnnotations != null) {
-            beanDefiningAnnotations.addAll(additionalBeanDefiningAnnotations);
+        if (builder.additionalBeanDefiningAnnotations != null) {
+            beanDefiningAnnotations.addAll(builder.additionalBeanDefiningAnnotations);
         }
         this.beanDefiningAnnotations = beanDefiningAnnotations;
-        this.resourceAnnotations = new HashSet<>(resourceAnnotations);
+        this.resourceAnnotations = new HashSet<>(builder.resourceAnnotations);
         this.index = index;
-        this.annotationStore = new AnnotationStore(annotationTransformers, buildContext);
+        this.annotationStore = new AnnotationStore(initAndSort(builder.annotationTransformers, buildContext), buildContext);
         if (buildContext != null) {
             buildContext.putInternal(Key.ANNOTATION_STORE.asString(), annotationStore);
         }
-        this.injectionPointTransformer = new InjectionPointModifier(injectionPointsTransformers, buildContext);
-        this.observerTransformers = observerTransformers;
-        this.removeUnusedBeans = removeUnusedBeans;
-        this.unusedExclusions = removeUnusedBeans ? unusedExclusions : null;
+        this.injectionPointTransformer = new InjectionPointModifier(
+                initAndSort(builder.injectionPointTransformers, buildContext), buildContext);
+        this.observerTransformers = initAndSort(builder.observerTransformers, buildContext);
+        this.removeUnusedBeans = builder.removeUnusedBeans;
+        this.unusedExclusions = removeUnusedBeans ? new ArrayList<>(builder.removalExclusions) : null;
         this.removedBeans = new CopyOnWriteArraySet<>();
 
         this.customContexts = new ConcurrentHashMap<>();
@@ -143,7 +136,7 @@ public class BeanDeployment {
 
         this.interceptorBindings = findInterceptorBindings(index);
         this.nonBindingFields = new HashMap<>();
-        for (InterceptorBindingRegistrar registrar : bindingRegistrars) {
+        for (InterceptorBindingRegistrar registrar : builder.additionalInterceptorBindingRegistrars) {
             for (Map.Entry<DotName, Set<String>> bindingEntry : registrar.registerAdditionalBindings().entrySet()) {
                 DotName dotName = bindingEntry.getKey();
                 ClassInfo classInfo = getClassByName(index, dotName);
@@ -158,7 +151,7 @@ public class BeanDeployment {
         buildContextPut(Key.INTERCEPTOR_BINDINGS.asString(), Collections.unmodifiableMap(interceptorBindings));
 
         this.stereotypes = findStereotypes(index, interceptorBindings, beanDefiningAnnotations, customContexts,
-                additionalStereotypes, annotationStore);
+                builder.additionalStereotypes, annotationStore);
         buildContextPut(Key.STEREOTYPES.asString(), Collections.unmodifiableMap(stereotypes));
 
         this.transitiveInterceptorBindings = findTransitiveInterceptorBindigs(interceptorBindings.keySet(), index,
@@ -171,9 +164,10 @@ public class BeanDeployment {
 
         this.beanResolver = new BeanResolver(this);
         this.interceptorResolver = new InterceptorResolver(this);
-        this.transformUnproxyableClasses = transformUnproxyableClasses;
-        this.jtaCapabilities = jtaCapabilities;
-        this.alternativePriorities = alternativePriorities;
+        this.transformUnproxyableClasses = builder.transformUnproxyableClasses;
+        this.jtaCapabilities = builder.jtaCapabilities;
+        this.alternativePriorities = builder.alternativePriorities;
+        this.excludeTypes = builder.excludeTypes != null ? new ArrayList<>(builder.excludeTypes) : Collections.emptyList();
     }
 
     ContextRegistrar.RegistrationContext registerCustomContexts(List<ContextRegistrar> contextRegistrars) {
@@ -350,6 +344,10 @@ public class BeanDeployment {
         return Collections.unmodifiableCollection(qualifiers.values());
     }
 
+    public Collection<ClassInfo> getInterceptorBindings() {
+        return Collections.unmodifiableCollection(interceptorBindings.values());
+    }
+
     public Collection<ObserverInfo> getObservers() {
         return observers;
     }
@@ -366,7 +364,7 @@ public class BeanDeployment {
         return beanResolver;
     }
 
-    InterceptorResolver getInterceptorResolver() {
+    public InterceptorResolver getInterceptorResolver() {
         return interceptorResolver;
     }
 
@@ -422,7 +420,7 @@ public class BeanDeployment {
         return annotationStore;
     }
 
-    Collection<AnnotationInstance> getAnnotations(AnnotationTarget target) {
+    public Collection<AnnotationInstance> getAnnotations(AnnotationTarget target) {
         return annotationStore.getAnnotations(target);
     }
 
@@ -635,14 +633,21 @@ public class BeanDeployment {
 
         for (ClassInfo beanClass : index.getKnownClasses()) {
 
-            if (Modifier.isInterface(beanClass.flags()) || DotNames.ENUM.equals(beanClass.superName())) {
-                // Skip interfaces, annotations and enums
+            if (Modifier.isInterface(beanClass.flags()) || Modifier.isAbstract(beanClass.flags())
+            // Replace with ClassInfo#isAnnotation() and ClassInfo#isEnum() when using Jandex 2.1.4+
+                    || (beanClass.flags() & ANNOTATION) != 0
+                    || DotNames.ENUM.equals(beanClass.superName())) {
+                // Skip interfaces, abstract classes, annotations and enums
                 continue;
             }
 
             if (beanClass.nestingType().equals(NestingType.ANONYMOUS) || beanClass.nestingType().equals(NestingType.LOCAL)
                     || (beanClass.nestingType().equals(NestingType.INNER) && !Modifier.isStatic(beanClass.flags()))) {
                 // Skip anonymous, local and inner classes
+                continue;
+            }
+
+            if (isExcluded(beanClass)) {
                 continue;
             }
 
@@ -857,6 +862,17 @@ public class BeanDeployment {
         return beans;
     }
 
+    private boolean isExcluded(ClassInfo beanClass) {
+        if (!excludeTypes.isEmpty()) {
+            for (Predicate<ClassInfo> exclude : excludeTypes) {
+                if (exclude.test(beanClass)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private void registerObserverMethods(Collection<ClassInfo> beanClasses,
             List<ObserverInfo> observers,
             List<InjectionPointInfo> injectionPoints,
@@ -996,6 +1012,10 @@ public class BeanDeployment {
         }
         List<InterceptorInfo> interceptors = new ArrayList<>();
         for (ClassInfo interceptorClass : interceptorClasses) {
+            if (annotationStore.hasAnnotation(interceptorClass, DotNames.VETOED)) {
+                // Skip vetoed interceptors
+                continue;
+            }
             interceptors
                     .add(Interceptors.createInterceptor(interceptorClass, this, injectionPointTransformer, annotationStore));
         }

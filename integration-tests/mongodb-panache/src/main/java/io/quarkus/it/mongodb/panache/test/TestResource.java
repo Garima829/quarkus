@@ -11,6 +11,9 @@ import javax.ws.rs.core.Response;
 import org.bson.Document;
 import org.junit.jupiter.api.Assertions;
 
+import com.mongodb.client.model.Collation;
+import com.mongodb.client.model.CollationStrength;
+
 import io.quarkus.mongodb.panache.PanacheQuery;
 import io.quarkus.mongodb.panache.reactive.ReactivePanacheQuery;
 import io.quarkus.panache.common.Page;
@@ -74,6 +77,13 @@ public class TestResource {
         Assertions.assertEquals(0, TestImperativeEntity.list("category = :category",
                 Parameters.with("category", null)).size());
 
+        // regex
+        TestImperativeEntity entityWithUpperCase = new TestImperativeEntity("title11", "upperCaseCategory", "desc");
+        entityWithUpperCase.persist();
+        Assertions.assertEquals(1, TestImperativeEntity.list("category like ?1", "upperCase.*").size());
+        Assertions.assertEquals(1, TestImperativeEntity.list("category like ?1", "/uppercase.*/i").size());
+        entityWithUpperCase.delete();
+
         // sort
         TestImperativeEntity entityA = new TestImperativeEntity("aaa", "aaa", "aaa");
         entityA.persist();
@@ -85,6 +95,27 @@ public class TestResource {
         Assertions.assertEquals("zzz", result.title);
         entityA.delete();
         entityZ.delete();
+
+        // collation
+        TestImperativeEntity entityALower = new TestImperativeEntity("aaa", "aaa", "aaa");
+        entityALower.persist();
+        TestImperativeEntity entityAUpper = new TestImperativeEntity("AAA", "AAA", "AAA");
+        entityAUpper.persist();
+        TestImperativeEntity entityB = new TestImperativeEntity("BBB", "BBB", "BBB");
+        entityB.persistOrUpdate();
+        List<TestImperativeEntity> results = TestImperativeEntity.<TestImperativeEntity> listAll(Sort.ascending("title"));
+        Assertions.assertEquals("AAA", results.get(0).title);
+        Assertions.assertEquals("BBB", results.get(1).title);
+        Assertions.assertEquals("aaa", results.get(2).title);
+        Collation collation = Collation.builder().caseLevel(true).collationStrength(CollationStrength.PRIMARY).locale("fr")
+                .build();
+        results = TestImperativeEntity.<TestImperativeEntity> findAll(Sort.ascending("title")).withCollation(collation).list();
+        Assertions.assertEquals("aaa", results.get(0).title);
+        Assertions.assertEquals("AAA", results.get(1).title);
+        Assertions.assertEquals("BBB", results.get(2).title);
+        entityAUpper.delete();
+        entityALower.delete();
+        entityB.delete();
 
         // count
         Assertions.assertEquals(5, TestImperativeEntity.count("category", "category0"));
@@ -187,6 +218,13 @@ public class TestResource {
         Assertions.assertEquals(0, testImperativeRepository.list("category = :category",
                 Parameters.with("category", null)).size());
 
+        // regex
+        TestImperativeEntity entityWithUpperCase = new TestImperativeEntity("title11", "upperCaseCategory", "desc");
+        testImperativeRepository.persist(entityWithUpperCase);
+        Assertions.assertEquals(1, testImperativeRepository.list("category like ?1", "upperCase.*").size());
+        Assertions.assertEquals(1, testImperativeRepository.list("category like ?1", "/uppercase.*/i").size());
+        testImperativeRepository.delete(entityWithUpperCase);
+
         // sort
         TestImperativeEntity entityA = new TestImperativeEntity("aaa", "aaa", "aaa");
         testImperativeRepository.persist(entityA);
@@ -198,6 +236,28 @@ public class TestResource {
         Assertions.assertEquals("zzz", result.title);
         testImperativeRepository.delete(entityA);
         testImperativeRepository.delete(entityZ);
+
+        // collation
+        TestImperativeEntity entityALower = new TestImperativeEntity("aaa", "aaa", "aaa");
+        testImperativeRepository.persist(entityALower);
+        TestImperativeEntity entityAUpper = new TestImperativeEntity("AAA", "AAA", "AAA");
+        testImperativeRepository.persist(entityAUpper);
+        TestImperativeEntity entityB = new TestImperativeEntity("BBB", "BBB", "BBB");
+        testImperativeRepository.persistOrUpdate(entityB);
+        List<TestImperativeEntity> results = testImperativeRepository.<TestImperativeEntity> listAll(Sort.ascending("title"));
+        Assertions.assertEquals("AAA", results.get(0).title);
+        Assertions.assertEquals("BBB", results.get(1).title);
+        Assertions.assertEquals("aaa", results.get(2).title);
+        Collation collation = Collation.builder().caseLevel(true).collationStrength(CollationStrength.PRIMARY).locale("fr")
+                .build();
+        results = testImperativeRepository.<TestImperativeEntity> findAll(Sort.ascending("title")).withCollation(collation)
+                .list();
+        Assertions.assertEquals("aaa", results.get(0).title);
+        Assertions.assertEquals("AAA", results.get(1).title);
+        Assertions.assertEquals("BBB", results.get(2).title);
+        testImperativeRepository.delete(entityALower);
+        testImperativeRepository.delete(entityAUpper);
+        testImperativeRepository.delete(entityB);
 
         // count
         Assertions.assertEquals(5, testImperativeRepository.count("category", "category0"));
@@ -374,6 +434,15 @@ public class TestResource {
         Assertions.assertEquals(0, TestReactiveEntity.list("category = :category",
                 Parameters.with("category", null)).await().indefinitely().size());
 
+        // regex
+        TestReactiveEntity entityWithUpperCase = new TestReactiveEntity("title11", "upperCaseCategory", "desc");
+        entityWithUpperCase.persist().await().indefinitely();
+        Assertions.assertEquals(1, TestReactiveEntity.list("category like ?1", "upperCase.*")
+                .await().indefinitely().size());
+        Assertions.assertEquals(1, TestReactiveEntity.list("category like ?1", "/uppercase.*/i")
+                .await().indefinitely().size());
+        entityWithUpperCase.delete().await().indefinitely();
+
         // sort
         TestReactiveEntity entityA = new TestReactiveEntity("aaa", "aaa", "aaa");
         entityA.persist().await().indefinitely();
@@ -386,6 +455,29 @@ public class TestResource {
         Assertions.assertEquals("zzz", result.title);
         entityA.delete().await().indefinitely();
         entityZ.delete().await().indefinitely();
+
+        // collation
+        TestReactiveEntity entityALower = new TestReactiveEntity("aaa", "aaa", "aaa");
+        entityALower.persist().await().indefinitely();
+        TestReactiveEntity entityAUpper = new TestReactiveEntity("AAA", "AAA", "AAA");
+        entityAUpper.persist().await().indefinitely();
+        TestReactiveEntity entityB = new TestReactiveEntity("BBB", "BBB", "BBB");
+        entityB.persistOrUpdate().await().indefinitely();
+        List<TestReactiveEntity> results = TestReactiveEntity.<TestReactiveEntity> listAll(Sort.ascending("title")).await()
+                .indefinitely();
+        Assertions.assertEquals("AAA", results.get(0).title);
+        Assertions.assertEquals("BBB", results.get(1).title);
+        Assertions.assertEquals("aaa", results.get(2).title);
+        Collation collation = Collation.builder().caseLevel(true).collationStrength(CollationStrength.PRIMARY).locale("fr")
+                .build();
+        results = TestReactiveEntity.<TestReactiveEntity> findAll(Sort.ascending("title")).withCollation(collation).list()
+                .await().indefinitely();
+        Assertions.assertEquals("aaa", results.get(0).title);
+        Assertions.assertEquals("AAA", results.get(1).title);
+        Assertions.assertEquals("BBB", results.get(2).title);
+        entityAUpper.delete().await().indefinitely();
+        entityALower.delete().await().indefinitely();
+        entityB.delete().await().indefinitely();
 
         // count
         Assertions.assertEquals(5, TestReactiveEntity.count("category", "category0").await().indefinitely());
@@ -495,6 +587,15 @@ public class TestResource {
         Assertions.assertEquals(0, testReactiveRepository.list("category = :category",
                 Parameters.with("category", null)).await().indefinitely().size());
 
+        // regex
+        TestReactiveEntity entityWithUpperCase = new TestReactiveEntity("title11", "upperCaseCategory", "desc");
+        testReactiveRepository.persist(entityWithUpperCase).await().indefinitely();
+        Assertions.assertEquals(1, testReactiveRepository.list("category like ?1", "upperCase.*")
+                .await().indefinitely().size());
+        Assertions.assertEquals(1, testReactiveRepository.list("category like ?1", "/uppercase.*/i")
+                .await().indefinitely().size());
+        testReactiveRepository.delete(entityWithUpperCase).await().indefinitely();
+
         // sort
         TestReactiveEntity entityA = new TestReactiveEntity("aaa", "aaa", "aaa");
         testReactiveRepository.persist(entityA).await().indefinitely();
@@ -506,6 +607,28 @@ public class TestResource {
         Assertions.assertEquals("zzz", result.title);
         testReactiveRepository.delete(entityA).await().indefinitely();
         testReactiveRepository.delete(entityZ).await().indefinitely();
+
+        // collation
+        TestReactiveEntity entityALower = new TestReactiveEntity("aaa", "aaa", "aaa");
+        testReactiveRepository.persist(entityALower).await().indefinitely();
+        TestReactiveEntity entityAUpper = new TestReactiveEntity("AAA", "AAA", "AAA");
+        testReactiveRepository.persist(entityAUpper).await().indefinitely();
+        TestReactiveEntity entityB = new TestReactiveEntity("BBB", "BBB", "BBB");
+        testReactiveRepository.persistOrUpdate(entityB).await().indefinitely();
+        List<TestReactiveEntity> results = testReactiveRepository.listAll(Sort.ascending("title")).await().indefinitely();
+        Assertions.assertEquals("AAA", results.get(0).title);
+        Assertions.assertEquals("BBB", results.get(1).title);
+        Assertions.assertEquals("aaa", results.get(2).title);
+        Collation collation = Collation.builder().caseLevel(true).collationStrength(CollationStrength.PRIMARY).locale("fr")
+                .build();
+        results = testReactiveRepository.findAll(Sort.ascending("title")).withCollation(collation).list().await()
+                .indefinitely();
+        Assertions.assertEquals("aaa", results.get(0).title);
+        Assertions.assertEquals("AAA", results.get(1).title);
+        Assertions.assertEquals("BBB", results.get(2).title);
+        testReactiveRepository.delete(entityALower).await().indefinitely();
+        testReactiveRepository.delete(entityAUpper).await().indefinitely();
+        testReactiveRepository.delete(entityB).await().indefinitely();
 
         // count
         Assertions.assertEquals(5,

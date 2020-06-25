@@ -7,6 +7,7 @@ import java.io.StringWriter;
 
 import javax.json.bind.Jsonb;
 import javax.json.bind.JsonbBuilder;
+import javax.transaction.Transactional;
 import javax.xml.bind.JAXBContext;
 import javax.xml.bind.JAXBException;
 import javax.xml.bind.Marshaller;
@@ -163,5 +164,52 @@ public class PanacheFunctionalityTest {
     @Test
     public void testBug8254() {
         RestAssured.when().get("/test/8254").then().body(is("OK"));
+    }
+
+    @Test
+    public void testBug9025() {
+        RestAssured.when().get("/test/9025").then().body(is("OK"));
+    }
+
+    @Test
+    public void testBug9036() {
+        RestAssured.when().get("/test/9036").then().body(is("OK"));
+    }
+
+    @DisabledOnNativeImage
+    @Transactional
+    @Test
+    void testBug7102InOneTransaction() {
+        testBug7102();
+    }
+
+    @DisabledOnNativeImage
+    @Test
+    public void testBug7102() {
+        Person person = createBug7102();
+        Person person1 = getBug7102(person.id);
+        Assertions.assertEquals("pero", person1.name);
+        updateBug7102(person.id);
+        Person person2 = getBug7102(person.id);
+        Assertions.assertEquals("jozo", person2.name);
+    }
+
+    @Transactional
+    Person createBug7102() {
+        Person personPanache = new Person();
+        personPanache.name = "pero";
+        personPanache.persistAndFlush();
+        return personPanache;
+    }
+
+    @Transactional
+    void updateBug7102(Long id) {
+        final Person person = Person.findById(id);
+        person.name = "jozo";
+    }
+
+    @Transactional
+    Person getBug7102(Long id) {
+        return Person.findById(id);
     }
 }

@@ -329,6 +329,7 @@ public class QuarkusUnitTest
         ExtensionContext.Store store = extensionContext.getRoot().getStore(ExtensionContext.Namespace.GLOBAL);
         if (store.get(TestResourceManager.class.getName()) == null) {
             TestResourceManager manager = new TestResourceManager(extensionContext.getRequiredTestClass());
+            manager.init();
             manager.start();
             store.put(TestResourceManager.class.getName(), new ExtensionContext.Store.CloseableResource() {
 
@@ -384,6 +385,11 @@ public class QuarkusUnitTest
                         .setProjectRoot(testLocation)
                         .setForcedDependencies(forcedDependencies.stream().map(d -> new AppDependency(d, "compile"))
                                 .collect(Collectors.toList()));
+                if (!forcedDependencies.isEmpty()) {
+                    //if we have forced dependencies we can't use the cache
+                    //as it can screw everything up
+                    builder.setDisableClasspathCache(true);
+                }
                 if (!allowTestClassOutsideDeployment) {
                     builder
                             .setBaseClassLoader(

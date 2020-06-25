@@ -61,7 +61,7 @@ Usually, Java frameworks do their bootstrapping during the runtime before actual
 * Having a peak of resource consumption at bootstrap: in a constrained environment, you will need to size the needed resources based on your technical bootstrap needs rather than your actual business needs.
 
 Quarkus' philosophy is to prevent as much as possible slow and memory intensive dynamic code execution by shifting left these actions and eventually do them during the build time.
-A Quarkus extension is a Java piece of code acting as an adapter layer for your favorite libary or technology.
+A Quarkus extension is a Java piece of code acting as an adapter layer for your favorite library or technology.
 
 == Description of a Quarkus extension
 
@@ -271,6 +271,10 @@ class GreetingProcessor {
 
 }
 ----
+
+NOTE: `FeatureBuildItem` represents a functionality provided by an extension. 
+The name of the feature gets displayed in the log during application bootstrap.
+An extension should provide at most one feature.
 
 Be patient, we will explain the `Build Step Processor` concept and all the extension deployment API later on.
 At this point, you just need to understand that this class explains to Quarkus how to deploy a feature named `greeting` which is your extension.
@@ -564,9 +568,10 @@ Let's add the testing dependencies into the  `./quarkus-greeting/deployment/pom.
                 <artifactId>maven-surefire-plugin</artifactId> <!--3-->
                 <version>${maven.surefire.version}</version>
                 <configuration>
-                    <systemProperties>
+                    <systemPropertyVariables>
                         <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
-                    </systemProperties>
+                        <maven.home>${maven.home}</maven.home>
+                    </systemPropertyVariables>
                 </configuration>
             </plugin>
         </plugins>
@@ -793,7 +798,7 @@ That's why there is the Quarkus Platform.
 
 *Quarkus Platform*
 
-Quarkus proposes a `quarkus-universe-bom` which is a certified list of extensions placed under the Quarkus Platform label. From an application developper, the objectives of the platform are:
+Quarkus proposes a `quarkus-universe-bom` which is a certified list of extensions placed under the Quarkus Platform label. From an application developer, the objectives of the platform are:
 
 * To guarantee a supportability of the extension (bugfix, security issues, dependency upgrades)
 * To ease the extension discovery through the Quarkus CLI or https://code.quarkus.io/

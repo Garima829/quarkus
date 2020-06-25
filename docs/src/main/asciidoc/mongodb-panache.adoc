@@ -80,16 +80,14 @@ cd mongodb-panache-quickstart
 This command generates a Maven structure importing the RESTEasy/JAX-RS, JSON-B and MongoDB with Panache extensions.
 After this, the `quarkus-mongodb-panache` extension has been added to your `pom.xml`.
 
-If you don't want to generate a new project you can add the dependency in your `pom.xml`:
+If you don't want to generate a new project, add the dependency in your `pom.xml`:
 
 [source,xml]
 ----
-<dependencies>
-    <dependency>
-        <groupId>io.quarkus</groupId>
-        <artifactId>quarkus-mongodb-panache</artifactId>
-    </dependency>
-</dependencies>
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-mongodb-panache</artifactId>
+</dependency>
 ----
 
 == Setting up and configuring MongoDB with Panache
@@ -502,7 +500,7 @@ MongoDB with Panache will then map it to a MongoDB native query.
 If your query does not start with `{`, we will consider it a PanacheQL query:
 
 - `<singlePropertyName>` (and single parameter) which will expand to `{'singleColumnName': '?1'}`
-- `<query>` will expand to `{<query>}` where we will map the PanacheQL query to MongoDB native query form. We support the following operators that will be mapped to the corresponding MongoDB operators: 'and', 'or' ( mixing 'and' and 'or' is not currently supported), '=', '>', '>=', '<', '<=', '!=', 'is null', 'is not null', and 'like' that is mapped to the MongoDB `$regex` operator.
+- `<query>` will expand to `{<query>}` where we will map the PanacheQL query to MongoDB native query form. We support the following operators that will be mapped to the corresponding MongoDB operators: 'and', 'or' ( mixing 'and' and 'or' is not currently supported), '=', '>', '>=', '<', '<=', '!=', 'is null', 'is not null', and 'like' that is mapped to the MongoDB `$regex` operator (both String and JavaScript patterns are supported).
 
 Here are some query examples:
 
@@ -510,6 +508,7 @@ Here are some query examples:
 - `amount > ?1 and firstname != ?2` will be mapped to `{'amount': {'$gt': ?1}, 'firstname': {'$ne': ?2}}`
 - `lastname like ?1` will be mapped to `{'lastname': {'$regex': ?1}}`. Be careful that this will be link:https://docs.mongodb.com/manual/reference/operator/query/regex/#op._S_regex[MongoDB regex] support and not SQL like pattern.
 - `lastname is not null` will be mapped to `{'lastname':{'$exists': true}}`
+- `status in ?1` will be mapped to `{'status':{$in: [?1]}}`
 
 We also handle some basic date type transformations: all fields of type `Date`, `LocalDate`, `LocalDateTime` or `Instant` will be mapped to the
 link:https://docs.mongodb.com/manual/reference/bson-types/#document-bson-type-date[BSON Date] using the `ISODate` type (UTC datetime).

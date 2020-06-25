@@ -12,7 +12,7 @@ include::./attributes.adoc[]
 This guide explains how your Quarkus application can utilize OAuth2 tokens to provide secured access to the JAX-RS endpoints.
 
 OAuth2 is an authorization framework that enables applications to obtain access to an HTTP resource on behalf of a user. 
-It can be used to implement an application authentication mechanism based on tokens by delegating to an external server (the authentication server) the user authentification and providing a token for the authentication context.
+It can be used to implement an application authentication mechanism based on tokens by delegating to an external server (the authentication server) the user authentication and providing a token for the authentication context.
 
 If your OAuth2 Authentication server provides JWT tokens, you should use link:security-jwt[MicroProfile JWT RBAC] instead, this extension aims to be used with opaque tokens and validate the token by calling an introspection endpoint.
 
@@ -47,15 +47,12 @@ This command generates the Maven project with a REST endpoint and imports the `e
 
 If you don't want to use the Maven plugin, you can just include the dependency in your pom.xml:
 [source,xml]
---
-<dependencies>
-    <!-- Elytron Security OAuth2 extension -->
-    <dependency>
-        <groupId>io.quarkus</groupId>
-        <artifactId>quarkus-elytron-security-oauth2</artifactId>
-    </dependency>
-</dependencies>
---
+----
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-elytron-security-oauth2</artifactId>
+</dependency>
+----
 
 
 === Examine the JAX-RS resource

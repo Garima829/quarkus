@@ -7,12 +7,15 @@ import org.eclipse.microprofile.metrics.MetricType;
 import org.eclipse.microprofile.metrics.Tag;
 
 import io.quarkus.deployment.Capabilities;
+import io.quarkus.deployment.Capability;
+import io.quarkus.deployment.Feature;
 import io.quarkus.deployment.annotations.BuildProducer;
 import io.quarkus.deployment.annotations.BuildStep;
 import io.quarkus.deployment.annotations.ExecutionTime;
 import io.quarkus.deployment.annotations.Record;
 import io.quarkus.deployment.builditem.ExtensionSslNativeSupportBuildItem;
 import io.quarkus.deployment.builditem.FeatureBuildItem;
+import io.quarkus.deployment.builditem.nativeimage.ReflectiveClassBuildItem;
 import io.quarkus.jaeger.runtime.JaegerBuildTimeConfig;
 import io.quarkus.jaeger.runtime.JaegerConfig;
 import io.quarkus.jaeger.runtime.JaegerDeploymentRecorder;
@@ -31,10 +34,10 @@ public class JaegerProcessor {
             ApplicationConfig appConfig, Capabilities capabilities, BuildProducer<MetricBuildItem> metricProducer) {
 
         // Indicates that this extension would like the SSL support to be enabled
-        extensionSslNativeSupport.produce(new ExtensionSslNativeSupportBuildItem(FeatureBuildItem.JAEGER));
+        extensionSslNativeSupport.produce(new ExtensionSslNativeSupportBuildItem(Feature.JAEGER.getName()));
 
         if (buildTimeConfig.enabled) {
-            boolean metricsEnabled = capabilities.isCapabilityPresent(Capabilities.METRICS)
+            boolean metricsEnabled = capabilities.isPresent(Capability.METRICS)
                     && buildTimeConfig.metricsEnabled;
             if (metricsEnabled) {
                 produceMetrics(metricProducer);
@@ -47,7 +50,16 @@ public class JaegerProcessor {
 
     @BuildStep
     public void build(BuildProducer<FeatureBuildItem> feature) {
-        feature.produce(new FeatureBuildItem(FeatureBuildItem.JAEGER));
+        feature.produce(new FeatureBuildItem(Feature.JAEGER));
+    }
+
+    @BuildStep
+    public void reflectiveClasses(BuildProducer<ReflectiveClassBuildItem> reflectiveClasses) {
+        reflectiveClasses.produce(ReflectiveClassBuildItem
+                .builder("io.jaegertracing.internal.samplers.http.SamplingStrategyResponse",
+                        "io.jaegertracing.internal.samplers.http.ProbabilisticSamplingStrategy")
+                .finalFieldsWritable(true)
+                .build());
     }
 
     private void produceMetrics(BuildProducer<MetricBuildItem> producer) {

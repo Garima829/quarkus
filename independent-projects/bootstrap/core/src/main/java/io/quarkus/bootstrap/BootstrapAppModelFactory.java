@@ -3,6 +3,7 @@ package io.quarkus.bootstrap;
 import io.quarkus.bootstrap.app.CurationResult;
 import io.quarkus.bootstrap.model.AppArtifact;
 import io.quarkus.bootstrap.model.AppArtifactCoords;
+import io.quarkus.bootstrap.model.AppArtifactKey;
 import io.quarkus.bootstrap.model.AppDependency;
 import io.quarkus.bootstrap.model.AppModel;
 import io.quarkus.bootstrap.resolver.AppModelResolver;
@@ -35,6 +36,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Set;
 import org.apache.maven.model.Dependency;
 import org.apache.maven.model.Model;
 import org.jboss.logging.Logger;
@@ -80,7 +82,8 @@ public class BootstrapAppModelFactory {
     private AppArtifact appArtifact;
     private MavenArtifactResolver mavenArtifactResolver;
 
-    private LocalProject currentProject;
+    private BootstrapMavenContext mvnContext;
+    Set<AppArtifactKey> localArtifacts = Collections.emptySet();
 
     private List<AppDependency> forcedDependencies = Collections.emptyList();
 
@@ -94,6 +97,15 @@ public class BootstrapAppModelFactory {
 
     public BootstrapAppModelFactory setDevMode(boolean devMode) {
         this.devMode = devMode;
+        return this;
+    }
+
+    public Set<AppArtifactKey> getLocalArtifacts() {
+        return localArtifacts;
+    }
+
+    public BootstrapAppModelFactory setLocalArtifacts(Set<AppArtifactKey> localArtifacts) {
+        this.localArtifacts = localArtifacts;
         return this;
     }
 
@@ -188,20 +200,19 @@ public class BootstrapAppModelFactory {
     }
 
     private BootstrapMavenContext createBootstrapMavenContext() throws AppModelResolverException {
+        if (mvnContext != null) {
+            return mvnContext;
+        }
         final BootstrapMavenContextConfig<?> config = BootstrapMavenContext.config();
         if (offline != null) {
             config.setOffline(offline);
         }
-        if (currentProject != null) {
-            config.setCurrentProject(currentProject);
-        } else {
-            // Currently projectRoot may be an app location which is not exactly a Maven project dir
-            //if (projectRoot != null && Files.isDirectory(projectRoot)) {
-            //    config.setCurrentProject(projectRoot.toString());
-            //}
-            config.setWorkspaceDiscovery(isWorkspaceDiscoveryEnabled());
+        // Currently projectRoot may be an app location which is not exactly a Maven project dir
+        if (projectRoot != null && Files.isDirectory(projectRoot) && Files.exists(projectRoot.resolve("pom.xml"))) {
+            config.setCurrentProject(projectRoot.toString());
         }
-        return new BootstrapMavenContext(config);
+        config.setWorkspaceDiscovery(isWorkspaceDiscoveryEnabled());
+        return mvnContext = new BootstrapMavenContext(config);
     }
 
     public CurationResult resolveAppModel() throws BootstrapException {
@@ -228,22 +239,23 @@ public class BootstrapAppModelFactory {
             return createAppModelForJar(projectRoot);
         }
 
-        LocalProject localProject = null;
-        AppArtifact appArtifact = this.appArtifact;
-        if (appArtifact == null) {
-            if (projectRoot == null) {
-                throw new IllegalArgumentException(
-                        "Neither the application artifact nor the project root path has been provided");
-            }
-            localProject = enableClasspathCache ? loadWorkspace() : LocalProject.load(projectRoot, false);
-            if (localProject == null) {
-                log.warn("Unable to locate the maven project on the filesystem");
-                throw new BootstrapException("Failed to determine the Maven artifact associated with the application");
-            }
-            appArtifact = localProject.getAppArtifact();
-        }
-
         try {
+            LocalProject localProject = null;
+            AppArtifact appArtifact = this.appArtifact;
+            if (appArtifact == null) {
+                if (projectRoot == null) {
+                    throw new IllegalArgumentException(
+                            "Neither the application artifact nor the project root path has been provided");
+                }
+                localProject = enableClasspathCache ? loadWorkspace() : LocalProject.load(projectRoot, false);
+                if (localProject == null) {
+                    log.warn("Unable to locate the maven project on the filesystem");
+                    throw new BootstrapException(
+                            "Failed to determine the Maven artifact associated with the application " + projectRoot);
+                }
+                appArtifact = localProject.getAppArtifact();
+            }
+
             Path cachedCpPath = null;
 
             LocalWorkspace workspace = null;
@@ -261,7 +273,7 @@ public class BootstrapAppModelFactory {
                                 ObjectInputStream in = new ObjectInputStream(reader);
                                 AppModel appModel = (AppModel) in.readObject();
 
-                                log.debugf("Loaded cached AppMode %s from %s", appModel, cachedCpPath);
+                                log.debugf("Loaded cached AppModel %s from %s", appModel, cachedCpPath);
                                 for (AppDependency i : appModel.getFullDeploymentDeps()) {
                                     for (Path p : i.getArtifact().getPaths()) {
                                         if (!Files.exists(p)) {
@@ -284,7 +296,7 @@ public class BootstrapAppModelFactory {
                 }
             }
             CurationResult curationResult = new CurationResult(getAppModelResolver()
-                    .resolveManagedModel(appArtifact, forcedDependencies, managingProject));
+                    .resolveManagedModel(appArtifact, forcedDependencies, managingProject, localArtifacts));
             if (cachedCpPath != null) {
                 Files.createDirectories(cachedCpPath.getParent());
                 try (DataOutputStream out = new DataOutputStream(Files.newOutputStream(cachedCpPath))) {
@@ -307,12 +319,10 @@ public class BootstrapAppModelFactory {
                 : localProjectsDiscovery;
     }
 
-    private LocalProject loadWorkspace() throws BootstrapException {
-        return currentProject == null
-                ? currentProject = projectRoot == null || !Files.isDirectory(projectRoot)
-                        ? null
-                        : LocalProject.loadWorkspace(projectRoot, false)
-                : currentProject;
+    private LocalProject loadWorkspace() throws AppModelResolverException {
+        return projectRoot == null || !Files.isDirectory(projectRoot)
+                ? null
+                : createBootstrapMavenContext().getCurrentProject();
     }
 
     private CurationResult createAppModelForJar(Path appArtifactPath) {
@@ -370,7 +380,8 @@ public class BootstrapAppModelFactory {
                     initialDepsList = modelResolver.resolveModel(appArtifact);
                 }
             } else {
-                initialDepsList = modelResolver.resolveManagedModel(appArtifact, Collections.emptyList(), managingProject);
+                initialDepsList = modelResolver.resolveManagedModel(appArtifact, Collections.emptyList(), managingProject,
+                        localArtifacts);
             }
         } catch (AppModelResolverException | IOException e) {
             throw new RuntimeException("Failed to resolve initial application dependencies", e);
@@ -434,7 +445,8 @@ public class BootstrapAppModelFactory {
 
         if (availableUpdates != null) {
             try {
-                return new CurationResult(modelResolver.resolveManagedModel(appArtifact, availableUpdates, managingProject),
+                return new CurationResult(
+                        modelResolver.resolveManagedModel(appArtifact, availableUpdates, managingProject, localArtifacts),
                         availableUpdates,
                         loadedFromState, appArtifact, stateArtifact);
             } catch (AppModelResolverException e) {

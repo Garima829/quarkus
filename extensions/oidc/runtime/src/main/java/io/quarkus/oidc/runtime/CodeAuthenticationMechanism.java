@@ -10,6 +10,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.regex.Pattern;
 
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
@@ -54,7 +55,8 @@ public class CodeAuthenticationMechanism extends AbstractOidcAuthenticationMecha
     private static final String STATE_COOKIE_NAME = "q_auth";
     private static final String SESSION_COOKIE_NAME = "q_session";
     private static final String POST_LOGOUT_COOKIE_NAME = "q_post_logout";
-    private static final String COOKIE_DELIM = "___";
+    private static final String COOKIE_DELIM = "|";
+    private static final Pattern COOKIE_PATTERN = Pattern.compile("\\" + COOKIE_DELIM);
 
     private static QuarkusSecurityIdentity augmentIdentity(SecurityIdentity securityIdentity,
             String accessToken,
@@ -80,17 +82,19 @@ public class CodeAuthenticationMechanism extends AbstractOidcAuthenticationMecha
     public Uni<SecurityIdentity> authenticate(RoutingContext context,
             IdentityProviderManager identityProviderManager,
             DefaultTenantConfigResolver resolver) {
-        Cookie sessionCookie = context.request().getCookie(SESSION_COOKIE_NAME);
+
+        Cookie sessionCookie = context.request().getCookie(
+                getSessionCookieName(resolver.resolve(context, false)));
 
         // if session already established, try to re-authenticate
         if (sessionCookie != null) {
-            String[] tokens = sessionCookie.getValue().split(COOKIE_DELIM);
+            String[] tokens = COOKIE_PATTERN.split(sessionCookie.getValue());
             String idToken = tokens[0];
             String accessToken = tokens[1];
             String refreshToken = tokens[2];
 
             TenantConfigContext configContext = resolver.resolve(context, true);
-            return authenticate(identityProviderManager, new IdTokenCredential(tokens[0], context))
+            return authenticate(identityProviderManager, new IdTokenCredential(idToken, context))
                     .map(new Function<SecurityIdentity, SecurityIdentity>() {
                         @Override
                         public SecurityIdentity apply(SecurityIdentity identity) {
@@ -109,23 +113,21 @@ public class CodeAuthenticationMechanism extends AbstractOidcAuthenticationMecha
 
                             Throwable cause = throwable.getCause();
 
-                            // we should have proper exception hierarchy to represent token expiration errors
-                            if (cause != null && !cause.getMessage().equalsIgnoreCase("expired token")) {
-                                throw new AuthenticationCompletionException(throwable);
+                            if (cause != null && !"expired token".equalsIgnoreCase(cause.getMessage())) {
+                                LOG.debugf("Authentication failure: %s", cause);
+                                throw new AuthenticationCompletionException(cause);
                             }
-
-                            // try silent refresh if required
-                            SecurityIdentity identity = null;
-
-                            if (configContext.oidcConfig.token.refreshExpired) {
-                                identity = trySilentRefresh(configContext, idToken, refreshToken, context,
-                                        identityProviderManager);
+                            if (!configContext.oidcConfig.token.refreshExpired) {
+                                LOG.debug("Token has expired, token refresh is not allowed");
+                                throw new AuthenticationCompletionException(cause);
                             }
-
+                            LOG.debug("Token has expired, trying to refresh it");
+                            SecurityIdentity identity = trySilentRefresh(configContext, idToken, refreshToken, context,
+                                    identityProviderManager);
                             if (identity == null) {
-                                throw new AuthenticationFailedException(throwable);
+                                LOG.debug("SecurityIdentity is null after a token refresh");
+                                throw new AuthenticationCompletionException();
                             }
-
                             return identity;
                         }
                     });
@@ -136,8 +138,9 @@ public class CodeAuthenticationMechanism extends AbstractOidcAuthenticationMecha
     }
 
     public Uni<ChallengeData> getChallenge(RoutingContext context, DefaultTenantConfigResolver resolver) {
+
         TenantConfigContext configContext = resolver.resolve(context, true);
-        removeCookie(context, configContext, SESSION_COOKIE_NAME);
+        removeCookie(context, configContext, getSessionCookieName(configContext));
 
         ChallengeData challenge;
         JsonObject params = new JsonObject();
@@ -180,8 +183,9 @@ public class CodeAuthenticationMechanism extends AbstractOidcAuthenticationMecha
         }
 
         TenantConfigContext configContext = resolver.resolve(context, true);
+        Cookie stateCookie = context.getCookie(getStateCookieName(configContext));
 
-        Cookie stateCookie = context.getCookie(STATE_COOKIE_NAME);
+        String userQuery = null;
         if (stateCookie != null) {
             List<String> values = context.queryParam("state");
             // IDP must return a 'state' query parameter and the value of the state cookie must start with this parameter's value
@@ -189,32 +193,52 @@ public class CodeAuthenticationMechanism extends AbstractOidcAuthenticationMecha
                 LOG.debug("State parameter can not be empty or multi-valued");
                 return Uni.createFrom().failure(new AuthenticationCompletionException());
             } else if (!stateCookie.getValue().startsWith(values.get(0))) {
-                LOG.debug("State cookie does not match the state parameter");
+                LOG.debug("State cookie value does not match the state query parameter value");
                 return Uni.createFrom().failure(new AuthenticationCompletionException());
             } else if (context.queryParam("pathChecked").isEmpty()) {
                 // This is an original redirect from IDP, check if the request path needs to be updated
-                String[] pair = stateCookie.getValue().split(COOKIE_DELIM);
+                String[] pair = COOKIE_PATTERN.split(stateCookie.getValue());
                 if (pair.length == 2) {
                     // The extra path that needs to be added to the current request path
                     String extraPath = pair[1];
-                    // Adding a query marker that the state cookie has already been used to restore the path
-                    // as deleting it now would increase the risk of CSRF
-                    String extraQuery = "?pathChecked=true";
 
-                    // The query parameters returned from IDP need to be included
-                    if (context.request().query() != null) {
-                        extraQuery += ("&" + context.request().query());
+                    // The original user query if any will be added to the final redirect URI
+                    // after the authentication has been complete
+
+                    int userQueryIndex = extraPath.indexOf("?");
+                    if (userQueryIndex != 0) {
+                        if (userQueryIndex > 0) {
+                            extraPath = extraPath.substring(0, userQueryIndex);
+                        }
+                        // Adding a query marker that the state cookie has already been used to restore the path
+                        // as deleting it now would increase the risk of CSRF
+                        String extraQuery = "?pathChecked=true";
+
+                        // The query parameters returned from IDP need to be included
+                        if (context.request().query() != null) {
+                            extraQuery += ("&" + context.request().query());
+                        }
+
+                        String localRedirectUri = buildUri(context, isForceHttps(configContext), extraPath + extraQuery);
+                        LOG.debugf("Local redirect URI: %s", localRedirectUri);
+                        return Uni.createFrom().failure(new AuthenticationRedirectException(localRedirectUri));
+                    } else if (userQueryIndex + 1 < extraPath.length()) {
+                        // only the user query needs to be restored, no need to redirect
+                        userQuery = extraPath.substring(userQueryIndex + 1);
                     }
-
-                    String localRedirectUri = buildUri(context, isForceHttps(configContext), extraPath + extraQuery);
-                    LOG.debugf("Local redirect URI: %s", localRedirectUri);
-                    return Uni.createFrom().failure(new AuthenticationRedirectException(localRedirectUri));
                 }
                 // The original request path does not have to be restored, the state cookie is no longer needed
-                removeCookie(context, configContext, STATE_COOKIE_NAME);
+                removeCookie(context, configContext, getStateCookieName(configContext));
             } else {
+                String[] pair = COOKIE_PATTERN.split(stateCookie.getValue());
+                if (pair.length == 2) {
+                    int userQueryIndex = pair[1].indexOf("?");
+                    if (userQueryIndex >= 0 && userQueryIndex + 1 < pair[1].length()) {
+                        userQuery = pair[1].substring(userQueryIndex + 1);
+                    }
+                }
                 // Local redirect restoring the original request path, the state cookie is no longer needed
-                removeCookie(context, configContext, STATE_COOKIE_NAME);
+                removeCookie(context, configContext, getStateCookieName(configContext));
             }
         } else {
             // State cookie must be available to minimize the risk of CSRF
@@ -241,6 +265,7 @@ public class CodeAuthenticationMechanism extends AbstractOidcAuthenticationMecha
             params.put("client_assertion", signJwtWithClientSecret(configContext.oidcConfig));
         }
 
+        final String finalUserQuery = userQuery;
         return Uni.createFrom().emitter(new Consumer<UniEmitter<? super SecurityIdentity>>() {
             @Override
             public void accept(UniEmitter<? super SecurityIdentity> uniEmitter) {
@@ -264,7 +289,10 @@ public class CodeAuthenticationMechanism extends AbstractOidcAuthenticationMecha
                                         processSuccessfulAuthentication(context, configContext, result, identity);
                                         if (configContext.oidcConfig.authentication.removeRedirectParameters
                                                 && context.request().query() != null) {
-                                            final String finalRedirectUri = buildUriWithoutQueryParams(context);
+                                            String finalRedirectUri = buildUriWithoutQueryParams(context);
+                                            if (finalUserQuery != null) {
+                                                finalRedirectUri += ("?" + finalUserQuery);
+                                            }
                                             LOG.debugf("Final redirect URI: %s", finalRedirectUri);
                                             uniEmitter.fail(new AuthenticationRedirectException(finalRedirectUri));
                                         } else {
@@ -303,7 +331,7 @@ public class CodeAuthenticationMechanism extends AbstractOidcAuthenticationMecha
 
     private void processSuccessfulAuthentication(RoutingContext context, TenantConfigContext configContext,
             AccessToken result, SecurityIdentity securityIdentity) {
-        removeCookie(context, configContext, SESSION_COOKIE_NAME);
+        removeCookie(context, configContext, getSessionCookieName(configContext));
 
         String cookieValue = new StringBuilder(result.opaqueIdToken())
                 .append(COOKIE_DELIM)
@@ -315,7 +343,7 @@ public class CodeAuthenticationMechanism extends AbstractOidcAuthenticationMecha
         if (configContext.oidcConfig.token.lifespanGrace.isPresent()) {
             maxAge += configContext.oidcConfig.token.lifespanGrace.get();
         }
-        createCookie(context, configContext, SESSION_COOKIE_NAME, cookieValue, maxAge);
+        createCookie(context, configContext, getSessionCookieName(configContext), cookieValue, maxAge);
     }
 
     private String getRedirectPath(TenantConfigContext configContext, RoutingContext context) {
@@ -329,15 +357,23 @@ public class CodeAuthenticationMechanism extends AbstractOidcAuthenticationMecha
         String cookieValue = uuid;
 
         Authentication auth = configContext.oidcConfig.getAuthentication();
-        if (auth.isRestorePathAfterRedirect() && !redirectPath.equals(context.request().path())) {
-            cookieValue += (COOKIE_DELIM + context.request().path());
+        if (auth.isRestorePathAfterRedirect()) {
+            String requestPath = !redirectPath.equals(context.request().path()) ? context.request().path() : "";
+            if (context.request().query() != null) {
+                requestPath += ("?" + context.request().query());
+            }
+            if (!requestPath.isEmpty()) {
+                cookieValue += (COOKIE_DELIM + requestPath);
+            }
         }
-        return createCookie(context, configContext, STATE_COOKIE_NAME, cookieValue, 60 * 30).getValue();
+        createCookie(context, configContext, getStateCookieName(configContext), cookieValue, 60 * 30);
+        return uuid;
     }
 
     private String generatePostLogoutState(RoutingContext context, TenantConfigContext configContext) {
-        removeCookie(context, configContext, POST_LOGOUT_COOKIE_NAME);
-        return createCookie(context, configContext, POST_LOGOUT_COOKIE_NAME, UUID.randomUUID().toString(), 60 * 30).getValue();
+        removeCookie(context, configContext, getPostLogoutCookieName(configContext));
+        return createCookie(context, configContext, getPostLogoutCookieName(configContext), UUID.randomUUID().toString(),
+                60 * 30).getValue();
     }
 
     private CookieImpl createCookie(RoutingContext context, TenantConfigContext configContext,
@@ -460,7 +496,27 @@ public class CodeAuthenticationMechanism extends AbstractOidcAuthenticationMecha
 
     private AuthenticationRedirectException redirectToLogoutEndpoint(RoutingContext context, TenantConfigContext configContext,
             String idToken) {
-        removeCookie(context, configContext, SESSION_COOKIE_NAME);
+        removeCookie(context, configContext, getSessionCookieName(configContext));
         return new AuthenticationRedirectException(buildLogoutRedirectUri(configContext, idToken, context));
     }
+
+    private static String getSessionCookieName(TenantConfigContext configContext) {
+        String cookieSuffix = getCookieSuffix(configContext);
+        return SESSION_COOKIE_NAME + cookieSuffix;
+    }
+
+    private static String getStateCookieName(TenantConfigContext configContext) {
+        String cookieSuffix = getCookieSuffix(configContext);
+        return STATE_COOKIE_NAME + cookieSuffix;
+    }
+
+    private static String getPostLogoutCookieName(TenantConfigContext configContext) {
+        String cookieSuffix = getCookieSuffix(configContext);
+        return POST_LOGOUT_COOKIE_NAME + cookieSuffix;
+    }
+
+    private static String getCookieSuffix(TenantConfigContext configContext) {
+        return !"Default".equals(configContext.oidcConfig.tenantId.get()) ? "_" + configContext.oidcConfig.tenantId.get() : "";
+    }
+
 }

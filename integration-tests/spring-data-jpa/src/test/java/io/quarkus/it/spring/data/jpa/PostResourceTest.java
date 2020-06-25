@@ -39,4 +39,26 @@ public class PostResourceTest {
                 .statusCode(200)
                 .body("size()", is(3));
     }
+
+    @Test
+    void testByByOrganization() {
+        when().get("/post/organization/RH").then()
+                .statusCode(200)
+                .body("size()", is(3));
+
+        when().get("/post/organization/RHT").then()
+                .statusCode(200)
+                .body("size()", is(0));
+    }
+
+    @Test
+    void testPostCommentByPostId() {
+        when().get("/post/postComment/postId/1").then()
+                .statusCode(200)
+                .body("size()", is(2));
+
+        when().get("/post/postComment/postId/10").then()
+                .statusCode(200)
+                .body("size()", is(0));
+    }
 }

@@ -73,6 +73,10 @@ public class OidcRecorder {
             return null;
         }
 
+        if (!oidcConfig.tenantId.isPresent()) {
+            oidcConfig.tenantId = Optional.of(tenantId);
+        }
+
         OAuth2ClientOptions options = new OAuth2ClientOptions();
 
         if (oidcConfig.getClientId().isPresent()) {
@@ -100,7 +104,11 @@ public class OidcRecorder {
         }
 
         // Base IDP server URL
-        options.setSite(oidcConfig.getAuthServerUrl().get());
+        String authServerUrl = oidcConfig.getAuthServerUrl().get();
+        if (authServerUrl.endsWith("/")) {
+            authServerUrl = authServerUrl.substring(0, authServerUrl.length() - 1);
+        }
+        options.setSite(authServerUrl);
         // RFC7662 introspection service address
         if (oidcConfig.getIntrospectionPath().isPresent()) {
             options.setIntrospectionPath(oidcConfig.getIntrospectionPath().get());
@@ -209,7 +217,7 @@ public class OidcRecorder {
                 }
             }
         }
-
+        auth.missingKeyHandler(new JwkSetRefreshHandler(auth, oidcConfig.token.forcedJwkRefreshInterval));
         return new TenantConfigContext(auth, oidcConfig);
     }
 

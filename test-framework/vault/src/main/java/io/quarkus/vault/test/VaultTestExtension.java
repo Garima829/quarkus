@@ -1,6 +1,6 @@
 package io.quarkus.vault.test;
 
-import static io.quarkus.vault.CredentialsProvider.PASSWORD_PROPERTY_NAME;
+import static io.quarkus.credentials.CredentialsProvider.PASSWORD_PROPERTY_NAME;
 import static io.quarkus.vault.runtime.VaultAuthManager.USERPASS_WRAPPING_TOKEN_PASSWORD_KEY;
 import static java.lang.Boolean.TRUE;
 import static java.lang.String.format;
@@ -30,6 +30,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -41,6 +42,7 @@ import org.testcontainers.containers.Container;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.Network;
 import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.containers.output.OutputFrame;
 
 import io.quarkus.vault.VaultException;
 import io.quarkus.vault.VaultKVSecretEngine;
@@ -49,7 +51,9 @@ import io.quarkus.vault.runtime.client.VaultClientException;
 import io.quarkus.vault.runtime.client.dto.sys.VaultInitResponse;
 import io.quarkus.vault.runtime.client.dto.sys.VaultSealStatusResult;
 import io.quarkus.vault.runtime.config.HealthConfig;
+import io.quarkus.vault.runtime.config.VaultAuthenticationConfig;
 import io.quarkus.vault.runtime.config.VaultBuildTimeConfig;
+import io.quarkus.vault.runtime.config.VaultKubernetesAuthenticationConfig;
 import io.quarkus.vault.runtime.config.VaultRuntimeConfig;
 import io.quarkus.vault.runtime.config.VaultTlsConfig;
 import io.quarkus.vault.test.client.TestVaultClient;
@@ -166,6 +170,8 @@ public class VaultTestExtension {
         serverConfig.tls.caCert = Optional.empty();
         serverConfig.connectTimeout = Duration.ofSeconds(5);
         serverConfig.readTimeout = Duration.ofSeconds(1);
+        serverConfig.authentication = new VaultAuthenticationConfig();
+        serverConfig.authentication.kubernetes = new VaultKubernetesAuthenticationConfig();
 
         VaultBuildTimeConfig buildTimeConfig = new VaultBuildTimeConfig();
         buildTimeConfig.health = new HealthConfig();
@@ -226,7 +232,10 @@ public class VaultTestExtension {
         postgresContainer.start();
         execPostgres(format("psql -U %s -d %s -f %s", DB_USERNAME, DB_NAME, TMP_POSTGRES_INIT_SQL_FILE));
 
+        Consumer<OutputFrame> consumer = outputFrame -> System.out.print("VAULT >> " + outputFrame.getUtf8String());
+        vaultContainer.setLogConsumers(Arrays.asList(consumer));
         vaultContainer.start();
+
         initVault();
         log.info("vault has started with root token: " + rootToken);
     }

@@ -214,7 +214,7 @@ NOTE: When using the `quarkus-container-image-jib` extension to build a containe
 
 Out of the box, the generated resources will be annotated with version control related information that can be used either by tooling, or by the user for troubleshooting purposes.
 
-[source, json]
+[source,json]
 ----
   "annotations": {
     "app.quarkus.io/vcs-url" : "<some url>",
@@ -224,28 +224,29 @@ Out of the box, the generated resources will be annotated with version control r
 
 ==== Custom Annotations
 
-Custom annotations can be added in a way similar to labels. For example to add the annotation `foo=bar` just apply the following configuration:
-
+Custom annotations can be added in a way similar to labels.For example to add the annotation `foo=bar` and `app.quarkus/id=42` just apply the following configuration:
 
 [source]
 ----
 quarkus.kubernetes.annotations.foo=bar
+quarkus."app.quarkus/id"=42
 ----
 
+[#env-vars]
 ==== Environment variables
 
 Kubernetes provides multiple ways of defining environment variables:
 
 - key/value pairs
-- from a Secret
-- from a ConfigMap
-- from fields
+- import all values from a Secret or ConfigMap
+- interpolate a single value identified by a given field in a Secret or ConfigMap
+- interpolate a value from a field within the same resource
 
 ===== Environment variables from key/value pairs
 
 To add a key/value pair as an environment variable in the generated resources:
 
-[source]
+[source,properties]
 ----
 quarkus.kubernetes.env.vars.my-env-var=foobar
 ----
@@ -258,9 +259,43 @@ Please note that the key `my-env-var` will be converted to uppercase and dashes 
 To add all key/value pairs of `Secret` as environment variables just apply the following configuration, separating each `Secret`
 to be used as source by a comma (`,`):
 
-[source]
+[source,properties]
 ----
 quarkus.kubernetes.env.secrets=my-secret,my-other-secret
+----
+
+which would generate the following in the container definition:
+
+[source,yaml]
+----
+envFrom:
+  - secretRef:
+      name: my-secret
+      optional: false
+  - secretRef:
+      name: my-other-secret
+      optional: false
+----
+
+The following extracts a value identified by the `keyName` field from the `my-secret` Secret into a `foo` environment variable:
+
+[source,properties]
+----
+quarkus.kubernetes.env.mapping.foo.from-secret=my-secret
+quarkus.kubernetes.env.mapping.foo.with-key=keyName
+----
+
+This would generate the following in the `env` section of your container:
+
+[source,yaml]
+----
+- env:
+  - name: FOO
+    valueFrom:
+      secretKeyRef:
+        key: keyName
+        name: my-secret
+        optional: false
 ----
 
 ===== Environment variables from ConfigMap
@@ -268,15 +303,49 @@ quarkus.kubernetes.env.secrets=my-secret,my-other-secret
 To add all key/value pairs from `ConfigMap` as environment variables just apply the following configuration, separating each
 `ConfigMap` to be used as source by a comma (`,`):
 
-[source]
+[source,properties]
 ----
 quarkus.kubernetes.env.configmaps=my-config-map,another-config-map
 ----
 
+which would generate the following in the container definition:
+
+[source,yaml]
+----
+envFrom:
+  - configMapRef:
+      name: my-config-map
+      optional: false
+  - configMapRef:
+      name: another-config-map
+      optional: false
+----
+
+The following extracts a value identified by the `keyName` field from the `my-config-map` ConfigMap into a `foo`
+environment variable:
+
+[source,properties]
+----
+quarkus.kubernetes.env.mapping.foo.from-configmap=my-configmap
+quarkus.kubernetes.env.mapping.foo.with-key=keyName
+----
+
+This would generate the following in the `env` section of your container:
+
+[source,yaml]
+----
+- env:
+  - name: FOO
+    valueFrom:
+      configMapRefKey:
+        key: keyName
+        name: my-configmap
+        optional: false
+----
+
 ===== Environment variables from fields
 
-It's also possible to use the value from another field to add a new environment variable by specifying the path of the field to
-be used as a source, as follows:
+It's also possible to use the value from another field to add a new environment variable by specifying the path of the field to be used as a source, as follows:
 
 [source]
 ----
@@ -285,29 +354,30 @@ quarkus.kubernetes.env.fields.foo=metadata.name
 
 ===== Validation
 
-A conflict between two definitions, e.g. mistakenly assigning both a value and specifying that a variable is derived
-from a field, will result in an error being thrown at build time so that you get the opportunity to fix the issue before you
-deploy your application to your cluster where it might be more difficult to diagnose the source of the issue.
+A conflict between two definitions, e.g. mistakenly assigning both a value and specifying that a variable is derived from a field, will result in an error being thrown at build time so that you get the opportunity to fix the issue before you deploy your application to your cluster where it might be more difficult to diagnose the source of the issue.
 
-Similarly, two redundant definitions, e.g. defining an injection from the same secret twice, will not cause an issue but will
-indeed report a warning to let you know that you might not have intended to duplicate that definition.
+Similarly, two redundant definitions, e.g. defining an injection from the same secret twice, will not cause an issue but will indeed report a warning to let you know that you might not have intended to duplicate that definition.
 
+[#env-vars-backwards]
 ===== Backwards compatibility
 
-Previous versions of the Kubernetes extension supported a different syntax to add environment variables. The older syntax is
-still supported but is deprecated and it's advised that you migrate to the new syntax.
+Previous versions of the Kubernetes extension supported a different syntax to add environment variables.The older syntax is still supported but is deprecated and it's advised that you migrate to the new syntax.
 
 .Old vs. new syntax
 |====
-|                       |Old                                                    | New                                                 |
-| Plain variable        |`quarkus.kubernetes.env-vars.my-env-var.value=foobar`  | `quarkus.kubernetes.env.vars.my-env-var=foobar`     |
-| From field            |`quarkus.kubernetes.env-vars.my-env-var.field=foobar`  | `quarkus.kubernetes.env.fields.my-env-var=foobar`   |
-| All from `ConfigMap`  |`quarkus.kubernetes.env-vars.xxx.configmap=foobar`     | `quarkus.kubernetes.env.configmaps=foobar`          |
-| All from `Secret`     |`quarkus.kubernetes.env-vars.xxx.secret=foobar`        | `quarkus.kubernetes.env.secrets=foobar`             |
+|                               |Old                                                    | New                                                 |
+| Plain variable                |`quarkus.kubernetes.env-vars.my-env-var.value=foobar`  | `quarkus.kubernetes.env.vars.my-env-var=foobar`     |
+| From field                    |`quarkus.kubernetes.env-vars.my-env-var.field=foobar`  | `quarkus.kubernetes.env.fields.my-env-var=foobar`   |
+| All from `ConfigMap`          |`quarkus.kubernetes.env-vars.xxx.configmap=foobar`     | `quarkus.kubernetes.env.configmaps=foobar`          |
+| All from `Secret`             |`quarkus.kubernetes.env-vars.xxx.secret=foobar`        | `quarkus.kubernetes.env.secrets=foobar`             |
+| From one `Secret` field       |`quarkus.kubernetes.env-vars.foo.secret=foobar`        | `quarkus.kubernetes.env.mapping.foo.from-secret=foobar` |
+|                               |`quarkus.kubernetes.env-vars.foo.value=field`          | `quarkus.kubernetes.env.mapping.foo.with-key=field` |
+| From one `ConfigMap` field    |`quarkus.kubernetes.env-vars.foo.configmap=foobar`     | `quarkus.kubernetes.env.mapping.foo.from-configmap=foobar` |
+|                               |`quarkus.kubernetes.env-vars.foo.value=field`          | `quarkus.kubernetes.env.mapping.foo.with-key=field` |
 |====
 
 NOTE: If you redefine the same variable using the new syntax while keeping the old syntax, **ONLY** the new version will be kept
-and a warning will be issued to alert you of the problem. For example, if you define both
+and a warning will be issued to alert you of the problem.For example, if you define both
 `quarkus.kubernetes.env-vars.my-env-var.value=foobar` and `quarkus.kubernetes.env.vars.my-env-var=newValue`, the extension will
 only generate an environment variable `MY_ENV_VAR=newValue` and issue a warning.
 
@@ -387,12 +457,53 @@ To access the API server from within a Kubernetes cluster, some RBAC related res
 So, when the `kubernetes-client` extension is present, the `kubernetes` extension is going to create those resources automatically, so that application will be granted the `view` role.
 If more roles are required, they will have to be added manually.
 
+=== Deploying to Minikube
+
+https://github.com/kubernetes/minikube[Minikube] is quite popular when a Kubernetes cluster is needed for development purposes. To make the deployment to Minikube
+experience as frictionless as possible, Quarkus provides the `quarkus-minikube` extension. This extension can be added to a project like so:
+
+[source,xml]
+----
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-minikube</artifactId>
+</dependency>
+----
+
+The purpose of this extension is to generate Kubernetes manifests (`minikube.yaml` and `minikube.json`) that are tailored to Minikube.
+This extension assumes a couple things:
+
+* Users won't be using an image registry and will instead make their container image accessible to the Kubernetes cluster by building it directly
+into Minikube's Docker daemon. To use Minikube's Docker daemon you must first execute:
++
+[source]
+----
+eval $(minikube -p minikube docker-env)
+----
+
+* Applications deployed to Kubernetes won't be accessed via a Kubernetes `Ingress`, but rather as a `NodePort` `Service`.
+The advantage of doing this is that the URL of an application can be retrieved trivially by executing:
++
+[source]
+----
+minikube service list
+----
+
+To control the https://kubernetes.io/docs/concepts/services-networking/service/#nodeport[nodePort] that is used in this case, users can set `quarkus.kubernetes.node-port`.
+Note however that this configuration is entirely optional because Quarkus will automatically use a proper (and non-changing) value if none is set.
+
+WARNING: It is highly discouraged to use the manifests generated by the Minikube extension when deploying to production as these manifests are intended for development purposes
+only. When deploying to production, consider using the vanilla Kubernetes manifests (or the OpenShift ones when targeting OpenShift).
+
+NOTE: If the assumptions the Minikube extension makes don't fit your workflow, nothing prevents you from using the regular Kubernetes extension to generate Kubernetes manifests
+and apply those to your Minikube cluster.
+
 == Tuning the generated resources using application.properties
 
 The Kubernetes extension allows tuning the generated manifest, using the `application.properties` file.
 Here are some examples:
 
-== Configuration options
+=== Configuration options
 
 The table below describe all the available configuration options.
 
@@ -444,7 +555,7 @@ In this example `initial-delay` and `period` are fields of the type `Probe`.
 Below you will find tables describing all available types.
 
 
-=== Basic Types
+==== Basic Types
 
 .ServiceType
 Allowed values: `cluster-ip`, `node-port`, `load-balancer`, `external-name`
@@ -494,7 +605,7 @@ Allowed values: `cluster-ip`, `node-port`, `load-balancer`, `external-name`
 |====
 
 
-=== Mounts and Volumes
+==== Mounts and Volumes
 
 .Mount
 |====
@@ -565,7 +676,7 @@ Allowed values: `cluster-ip`, `node-port`, `load-balancer`, `external-name`
 |====
 
 [#openshift]
-== OpenShift
+=== OpenShift
 
 To enable the generation of OpenShift resources, you need to include OpenShift in the target platforms:
 
@@ -640,7 +751,7 @@ The OpenShift resources can be customized in a similar approach with Kubernetes.
 |====
 
 [#knative]
-== Knative
+=== Knative
     
 To enable the generation of Knative resources, you need to include Knative in the target platforms:
 
@@ -733,6 +844,19 @@ The generated service can be customized using the following properties:
 | quarkus.knative.sidecars                        | Map<String, Container>                    |             |
 |====
 
+=== Deployment targets
+
+Mentioned in the previous sections was the concept of `deployment-target`. This concept allows users to control which Kubernetes manifests will be generated
+and deployed to a cluster (if `quarkus.kubernetes.deploy` has been set to `true`).
+
+By default, when no `deployment-target` is set, then only vanilla Kubernetes resources are generated and deployed. When multiple values are set (for example
+`quarkus.kubernetes.deployment-target=kubernetes,openshift`) then the resources for all targets are generated, but only the resources
+that correspond to the *first* target are applied to the cluster (if deployment is enabled).
+
+In the case of wrapper extensions like OpenShift and Minikube, when these extensions have been explicitly added to the project, the default `deployment-target`
+is set by those extensions. For example if `quarkus-minikube` has been added to a project, then `minikube` becomes the default deployment target and its
+resources will be applied to the Kubernetes cluster when deployment via `quarkus.kubernetes.deploy` has been set.
+Users can still override the deployment-targets manually using `quarkus.kubernetes.deployment-target`.
 
 === Deprecated configuration
 
@@ -774,6 +898,10 @@ kubernetes.env-vars[0].configmap=my-configmap
 quarkus.kubernetes.env-vars.foo.configmap=myconfigmap
 ----
 
+==== `env-vars` properties
+
+`quarkus.kubernetes.env-vars` are deprecated (though still currently supported as of this writing) and the new declaration style should be used instead.
+See <<#env-vars>> and more specifically <<env-vars-backwards>> for more details.
 
 == Deployment
 
@@ -802,3 +930,90 @@ This assumes that a `.kube/config` is available in your user directory that poin
 In other words the extension will use whatever cluster `kubectl` uses. The same applies to credentials.
 
 At the moment no additional options are provided for further customization.
+
+== Using existing resources
+
+Sometimes it's desirable to either provide additional resources (e.g. a ConfigMap, a Secret, a Deployment for a database etc) or provide custom ones that will be used as a `base` for the generation process.
+Those resources can be added under `src/main/kubernetes` directory and can be named after the target environment (e.g. kubernetes.json, openshift.json, knative.json, or the yml equivalents). Each of these files may contain one or more Kubernetes resources.
+
+Any resource found will be added in the generated manifests. Global modifications (e.g. labels, annotations etc) will also be applied to those resources.
+If one of the provided resources has the same name as one of the generated ones, then the generated resource will be created on top of the provided resource, respecting existing content when possible (e.g. existing labels, annotations, environment variables, mounts, replicas etc).
+
+The name of the resource is determined by the application name and may be overridden by `quarkus.kubernetes.name`, `quarkus.openshift.name` and `quarkus.knative.name`.
+
+For example, in the `kubernetes-quickstart` application, we can add a `kubernetes.yml` file in the `src/main/kubernetes` that looks like:
+
+[source,yaml]
+----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubernetes-quickstart
+  labels:
+    app: quickstart
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: quickstart
+  template:
+    metadata:
+      labels:
+        app: quickstart
+    spec:
+      containers:
+      - name: kubernetes-quickstart
+        image: someimage:latest
+        ports:
+        - containerPort: 80
+        env:
+        - name: FOO
+          value: BAR
+----
+
+The generated `kubernetes.yml` will look like:
+
+[source,yaml]
+----
+apiVersion: "apps/v1"
+kind: "Deployment"
+metadata:
+  annotations:
+    app.quarkus.io/build-timestamp: "2020-04-10 - 12:54:37 +0000"
+  labels:
+    app: "quickstart"
+  name: "kubernetes-quickstart"
+spec:
+  replicas: 3 <1>
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: "kubernetes-quickstart"
+      app.kubernetes.io/version: "1.0-SNAPSHOT"
+  template:
+    metadata:
+      annotations:
+        app.quarkus.io/build-timestamp: "2020-04-10 - 12:54:37 +0000"
+      labels:
+        app: "quickstart" <2>
+    spec:
+      containers:
+      - env:
+        - name: "FOO" <3>
+          value: "BAR"
+        image: "<<yourDockerUsernmae>>/kubernetes-quickstart:1.0-SNAPSHOT" <4>
+        imagePullPolicy: "Always"
+        name: "kubernetes-quickstart"
+        ports:
+        - containerPort: 8080 <5>
+          name: "http"
+          protocol: "TCP"
+      serviceAccount: "kubernetes-quickstart"
+----
+
+The provided replicas <1>, labels <2> and environment variables <3>  were retained. However, the image <4> and container port <5> were modified. Moreover, the default annotations have been added.
+
+[NOTE]
+====
+If the resource name does not match the application name (or the overridden name) instead of reusing the resource a new one will be added. Same goes for the container.
+If the name of the container does not match the application name (or the overridden name), container specific configuration will be ignored.
+====

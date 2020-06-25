@@ -1,18 +1,35 @@
 package io.quarkus.maven.it;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.from;
 
-import java.io.*;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.PrintStream;
+import java.io.UnsupportedEncodingException;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 import java.util.Properties;
 
 import org.apache.commons.io.FileUtils;
+import org.apache.maven.model.Build;
 import org.apache.maven.model.Dependency;
 import org.apache.maven.model.DependencyManagement;
 import org.apache.maven.model.Model;
-import org.apache.maven.shared.invoker.*;
+import org.apache.maven.model.Plugin;
+import org.apache.maven.shared.invoker.DefaultInvocationRequest;
+import org.apache.maven.shared.invoker.InvocationRequest;
+import org.apache.maven.shared.invoker.InvocationResult;
+import org.apache.maven.shared.invoker.Invoker;
+import org.apache.maven.shared.invoker.InvokerLogger;
+import org.apache.maven.shared.invoker.MavenInvocationException;
+import org.apache.maven.shared.invoker.PrintStreamLogger;
+import org.codehaus.plexus.util.xml.Xpp3Dom;
+import org.jboss.logmanager.LogManager;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
@@ -22,6 +39,7 @@ import com.google.common.io.Files;
 import io.quarkus.maven.it.verifier.RunningInvoker;
 import io.quarkus.maven.utilities.MojoUtils;
 import io.quarkus.platform.tools.ToolsConstants;
+import io.quarkus.test.devmode.util.DevModeTestUtils;
 
 /**
  * @author <a href="http://escoffier.me">Clement Escoffier</a>
@@ -43,7 +61,9 @@ public class CreateProjectMojoIT extends QuarkusPlatformAwareMojoTestBase {
         properties.put("projectGroupId", "org.acme");
         properties.put("projectArtifactId", "acme");
         properties.put("projectVersion", "1.0-SNAPSHOT");
-        setup(properties);
+        InvocationResult result = setup(properties);
+
+        assertThat(result.getExitCode()).isZero();
 
         // As the directory is not empty (log) navigate to the artifactID directory
         testDir = new File(testDir, "acme");
@@ -75,41 +95,29 @@ public class CreateProjectMojoIT extends QuarkusPlatformAwareMojoTestBase {
 
         assertThat(model.getProfiles()).hasSize(1);
         assertThat(model.getProfiles().get(0).getId()).isEqualTo("native");
+
+        Xpp3Dom surefireSystemProperties = Optional.ofNullable(model.getBuild())
+                .map(Build::getPlugins)
+                .flatMap(plugins -> plugins.stream().filter(p -> p.getArtifactId().equals("maven-surefire-plugin")).findFirst())
+                .map(Plugin::getConfiguration)
+                .map(Xpp3Dom.class::cast)
+                .map(cfg -> cfg.getChild("systemPropertyVariables"))
+                .orElse(null);
+        assertThat(surefireSystemProperties).isNotNull();
+        assertThat(surefireSystemProperties.getChild("java.util.logging.manager"))
+                .returns(LogManager.class.getName(), from(Xpp3Dom::getValue));
+        assertThat(surefireSystemProperties.getChild("maven.home"))
+                .returns("${maven.home}", from(Xpp3Dom::getValue));
     }
 
     @Test
-    public void testProjectGenerationFromEmptyPom() throws Exception {
+    public void testProjectGenerationWithExistingPomShouldFail() throws Exception {
         testDir = initProject("projects/simple-pom-it", "projects/project-generation-from-empty-pom");
         assertThat(testDir).isDirectory();
         invoker = initInvoker(testDir);
-        setup(new Properties());
+        InvocationResult result = setup(new Properties());
 
-        assertThat(new File(testDir, "pom.xml")).isFile();
-        assertThat(new File(testDir, "src/main/java")).isDirectory();
-
-        assertThat(new File(testDir, "src/main/resources/application.properties")).exists();
-        assertThat(new File(testDir, "src/main/resources/META-INF/resources/index.html")).exists();
-
-        assertThat(FileUtils.readFileToString(new File(testDir, "pom.xml"), "UTF-8"))
-                .contains(getPluginArtifactId(), MojoUtils.TEMPLATE_PROPERTY_QUARKUS_PLUGIN_VERSION_VALUE,
-                        getPluginGroupId());
-
-        final Model model = loadPom(testDir);
-        assertThat(model.getProperties().getProperty(MojoUtils.TEMPLATE_PROPERTY_QUARKUS_PLUGIN_VERSION_NAME))
-                .isEqualTo(getPluginVersion());
-        assertThat(model.getProperties().getProperty(MojoUtils.TEMPLATE_PROPERTY_QUARKUS_PLATFORM_ARTIFACT_ID_NAME))
-                .isEqualTo(getBomArtifactId());
-
-        assertThat(model.getDependencyManagement().getDependencies().stream()
-                .anyMatch(d -> d.getArtifactId().equals(MojoUtils.TEMPLATE_PROPERTY_QUARKUS_PLATFORM_ARTIFACT_ID_VALUE)
-                        && d.getVersion().equals(MojoUtils.TEMPLATE_PROPERTY_QUARKUS_PLATFORM_VERSION_VALUE)
-                        && d.getScope().equals("import")
-                        && d.getType().equals("pom"))).isTrue();
-
-        assertThat(model.getDependencies()).isEmpty();
-
-        assertThat(model.getProfiles()).hasSize(1);
-        assertThat(model.getProfiles().get(0).getId()).isEqualTo("native");
+        assertThat(result.getExitCode()).isOne();
     }
 
     @Test
@@ -122,7 +130,9 @@ public class CreateProjectMojoIT extends QuarkusPlatformAwareMojoTestBase {
         properties.put("projectGroupId", "org.acme");
         properties.put("projectArtifactId", "acme");
         properties.put("className", "org.acme.MyResource.java");
-        setup(properties);
+        InvocationResult result = setup(properties);
+
+        assertThat(result.getExitCode()).isZero();
 
         // As the directory is not empty (log) navigate to the artifactID directory
         testDir = new File(testDir, "acme");
@@ -151,20 +161,19 @@ public class CreateProjectMojoIT extends QuarkusPlatformAwareMojoTestBase {
     }
 
     @Test
-    public void testProjectGenerationFromMinimalPomWithResource() throws Exception {
-        testDir = initProject("projects/simple-pom-it", "projects/project-generation-from-empty-pom-with-resource");
+    public void testProjectGenerationFromScratchWithMissingExtensionShouldFail() throws Exception {
+        testDir = initEmptyProject("projects/project-generation-with-missing-extension");
         assertThat(testDir).isDirectory();
         invoker = initInvoker(testDir);
 
         Properties properties = new Properties();
-        properties.put("className", "org.acme.MyResource.java");
-        setup(properties);
+        properties.put("projectGroupId", "org.acme");
+        properties.put("projectArtifactId", "acme");
+        properties.put("className", "org.acme.MyResource");
+        properties.put("extensions", "resteasy,smallrye-metrics,missing");
+        InvocationResult result = setup(properties);
 
-        check(new File(testDir, "pom.xml"), MojoUtils.TEMPLATE_PROPERTY_QUARKUS_PLATFORM_VERSION_NAME);
-
-        assertThat(new File(testDir, "src/main/java")).isDirectory();
-
-        check(new File(testDir, "src/main/java/org/acme/MyResource.java"), "package org.acme;");
+        assertThat(result.getExitCode()).isZero();
     }
 
     @Test
@@ -177,8 +186,10 @@ public class CreateProjectMojoIT extends QuarkusPlatformAwareMojoTestBase {
         properties.put("projectGroupId", "org.acme");
         properties.put("projectArtifactId", "acme");
         properties.put("className", "org.acme.MyResource");
-        properties.put("extensions", "resteasy,smallrye-metrics,missing");
-        setup(properties);
+        properties.put("extensions", "resteasy,smallrye-metrics");
+        InvocationResult result = setup(properties);
+
+        assertThat(result.getExitCode()).isZero();
 
         // As the directory is not empty (log) navigate to the artifactID directory
         testDir = new File(testDir, "acme");
@@ -219,7 +230,9 @@ public class CreateProjectMojoIT extends QuarkusPlatformAwareMojoTestBase {
         properties.put("className", "org.acme.MyResource");
         properties.put("extensions", "kotlin,jackson");
         properties.put("buildTool", "gradle");
-        setup(properties);
+        InvocationResult result = setup(properties);
+
+        assertThat(result.getExitCode()).isZero();
 
         // As the directory is not empty (log) navigate to the artifactID directory
         testDir = new File(testDir, "acme");
@@ -244,7 +257,9 @@ public class CreateProjectMojoIT extends QuarkusPlatformAwareMojoTestBase {
         properties.put("projectArtifactId", "acme");
         properties.put("className", "org.acme.MyResource");
         properties.put("extensions", "commons-io:commons-io:2.5");
-        setup(properties);
+        InvocationResult result = setup(properties);
+
+        assertThat(result.getExitCode()).isZero();
 
         // As the directory is not empty (log) navigate to the artifactID directory
         testDir = new File(testDir, "acme");
@@ -269,21 +284,6 @@ public class CreateProjectMojoIT extends QuarkusPlatformAwareMojoTestBase {
                 && d.getVersion().equalsIgnoreCase("2.5"))).isTrue();
     }
 
-    @Test
-    public void testProjectGenerationFromMinimalPomWithDependencies() throws Exception {
-        testDir = initProject("projects/simple-pom-it",
-                "projects/project-generation-from-minimal-pom-with-extensions");
-        assertThat(testDir).isDirectory();
-        invoker = initInvoker(testDir);
-
-        Properties properties = new Properties();
-        properties.put("className", "org.acme.MyResource");
-        properties.put("extensions", "commons-io:commons-io:2.5");
-        setup(properties);
-        check(new File(testDir, "src/main/java/org/acme/MyResource.java"), "package org.acme;");
-        check(new File(testDir, "pom.xml"), "commons-io");
-    }
-
     /**
      * Reproducer for https://github.com/quarkusio/quarkus/issues/671
      */
@@ -295,28 +295,13 @@ public class CreateProjectMojoIT extends QuarkusPlatformAwareMojoTestBase {
 
         Properties properties = new Properties();
         properties.put("className", "MyGreatResource");
-        setup(properties);
+        InvocationResult result = setup(properties);
+
+        assertThat(result.getExitCode()).isZero();
         // As the directory is not empty (log) navigate to the artifactID directory
         testDir = new File(testDir, "my-quarkus-project");
         check(new File(testDir, "src/main/java/org/acme/quarkus/sample/MyGreatResource.java"),
                 "package org.acme.quarkus.sample;");
-    }
-
-    /**
-     * Reproducer for https://github.com/quarkusio/quarkus/issues/673
-     */
-    @Test
-    public void testThatGenerationFailedWhenTheUserPassGAVonExistingPom() throws Exception {
-        testDir = initProject("projects/simple-pom-it", "projects/fail-on-gav-and-existing-pom");
-        assertThat(testDir).isDirectory();
-        invoker = initInvoker(testDir);
-
-        Properties properties = new Properties();
-        properties.put("projectGroupId", "org.acme");
-        properties.put("className", "MyResource");
-        InvocationResult result = setup(properties);
-        assertThat(result.getExitCode()).isNotZero();
-        assertThat(new File(testDir, "src/main/java/org/acme/MyResource.java")).doesNotExist();
     }
 
     private void check(final File resource, final String contentsToFind) throws IOException {
@@ -343,7 +328,9 @@ public class CreateProjectMojoIT extends QuarkusPlatformAwareMojoTestBase {
         properties.put("projectGroupId", "org.acme");
         properties.put("projectArtifactId", "acme");
         properties.put("className", "org.acme.HelloResource");
-        setup(properties);
+        InvocationResult result = setup(properties);
+
+        assertThat(result.getExitCode()).isZero();
 
         // Run
         // As the directory is not empty (log) navigate to the artifactID directory
@@ -353,12 +340,12 @@ public class CreateProjectMojoIT extends QuarkusPlatformAwareMojoTestBase {
         mvnRunProps.setProperty("debug", "false");
         running.execute(Arrays.asList("compile", "quarkus:dev"), Collections.emptyMap(), mvnRunProps);
 
-        String resp = getHttpResponse();
+        String resp = DevModeTestUtils.getHttpResponse();
 
         assertThat(resp).containsIgnoringCase("ready").containsIgnoringCase("application").containsIgnoringCase("org.acme")
                 .containsIgnoringCase("1.0-SNAPSHOT");
 
-        String greeting = getHttpResponse("/hello");
+        String greeting = DevModeTestUtils.getHttpResponse("/hello");
         assertThat(greeting).containsIgnoringCase("hello");
     }
 

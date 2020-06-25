@@ -16,6 +16,6 @@
     <modules>
         <module>smallrye-reactive-streams-operators</module>
         <module>smallrye-reactive-type-converters</module>
-        <!-- we should also add support for the vertx execution model -->
+        <module>mutiny-reactive-streams-operators</module>
     </modules>
 </project>

@@ -30,6 +30,7 @@ import io.dekorate.utils.Serialization;
 import io.quarkus.container.image.deployment.ContainerImageCapabilitiesUtil;
 import io.quarkus.container.spi.ContainerImageInfoBuildItem;
 import io.quarkus.deployment.Capabilities;
+import io.quarkus.deployment.Capability;
 import io.quarkus.deployment.IsNormal;
 import io.quarkus.deployment.annotations.BuildProducer;
 import io.quarkus.deployment.annotations.BuildStep;
@@ -47,7 +48,7 @@ public class KubernetesDeployer {
             .values().stream()
             .map(s -> "\"" + s + "\"").collect(Collectors.joining(", "));
 
-    @BuildStep(onlyIf = { IsNormal.class, KubernetesDeploy.class })
+    @BuildStep(onlyIf = IsNormal.class)
     public void deploy(KubernetesClientBuildItem kubernetesClient,
             ContainerImageInfoBuildItem containerImageInfo,
             EnabledKubernetesDeploymentTargetsBuildItem targets,
@@ -56,6 +57,10 @@ public class KubernetesDeployer {
             BuildProducer<DeploymentResultBuildItem> deploymentResult,
             // needed to ensure that this step runs after the container image has been built
             @SuppressWarnings("unused") List<ArtifactResultBuildItem> artifactResults) {
+
+        if (!KubernetesDeploy.INSTANCE.check()) {
+            return;
+        }
 
         Optional<String> activeContainerImageCapability = ContainerImageCapabilitiesUtil
                 .getActiveContainerImageCapability(capabilities);
@@ -115,7 +120,7 @@ public class KubernetesDeployer {
         }
 
         if (OPENSHIFT.equals(selectedTarget.getName())) {
-            checkForMissingRegistry = Capabilities.CONTAINER_IMAGE_S2I.equals(activeContainerImageCapability);
+            checkForMissingRegistry = Capability.CONTAINER_IMAGE_S2I.equals(activeContainerImageCapability);
         } else if (MINIKUBE.equals(selectedTarget.getName())) {
             checkForMissingRegistry = false;
         }

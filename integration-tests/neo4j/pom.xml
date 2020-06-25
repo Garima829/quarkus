@@ -99,7 +99,6 @@
             <plugin>
                 <groupId>io.quarkus</groupId>
                 <artifactId>quarkus-maven-plugin</artifactId>
-                <version>${project.version}</version>
                 <executions>
                     <execution>
                         <goals>
@@ -156,9 +155,9 @@
                                     <goal>verify</goal>
                                 </goals>
                                 <configuration>
-                                    <systemProperties>
+                                    <systemPropertyVariables>
                                         <native.image.path>${project.build.directory}/${project.build.finalName}-runner</native.image.path>
-                                    </systemProperties>
+                                    </systemPropertyVariables>
                                 </configuration>
                             </execution>
                         </executions>
@@ -166,7 +165,6 @@
                     <plugin>
                         <groupId>io.quarkus</groupId>
                         <artifactId>quarkus-maven-plugin</artifactId>
-                        <version>${project.version}</version>
                         <executions>
                             <execution>
                                 <id>native-image</id>

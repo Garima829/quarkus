@@ -1,6 +1,21 @@
 package io.quarkus.reactive.mysql.client.runtime;
 
+import static io.quarkus.credentials.CredentialsProvider.PASSWORD_PROPERTY_NAME;
+import static io.quarkus.credentials.CredentialsProvider.USER_PROPERTY_NAME;
+import static io.quarkus.vertx.core.runtime.SSLConfigHelper.configureJksKeyCertOptions;
+import static io.quarkus.vertx.core.runtime.SSLConfigHelper.configureJksTrustOptions;
+import static io.quarkus.vertx.core.runtime.SSLConfigHelper.configurePemKeyCertOptions;
+import static io.quarkus.vertx.core.runtime.SSLConfigHelper.configurePemTrustOptions;
+import static io.quarkus.vertx.core.runtime.SSLConfigHelper.configurePfxKeyCertOptions;
+import static io.quarkus.vertx.core.runtime.SSLConfigHelper.configurePfxTrustOptions;
+
+import java.util.Map;
+
+import org.jboss.logging.Logger;
+
 import io.quarkus.arc.runtime.BeanContainer;
+import io.quarkus.credentials.CredentialsProvider;
+import io.quarkus.credentials.runtime.CredentialsProviderFinder;
 import io.quarkus.datasource.runtime.DataSourceRuntimeConfig;
 import io.quarkus.datasource.runtime.DataSourcesRuntimeConfig;
 import io.quarkus.datasource.runtime.LegacyDataSourceRuntimeConfig;
@@ -17,6 +32,8 @@ import io.vertx.sqlclient.PoolOptions;
 @Recorder
 @SuppressWarnings("deprecation")
 public class MySQLPoolRecorder {
+
+    private static final Logger log = Logger.getLogger(MySQLPoolRecorder.class);
 
     public RuntimeValue<MySQLPool> configureMySQLPool(RuntimeValue<Vertx> vertx, BeanContainer container,
             DataSourcesRuntimeConfig dataSourcesRuntimeConfig,
@@ -51,6 +68,10 @@ public class MySQLPoolRecorder {
                 dataSourceReactiveMySQLConfig);
         MySQLConnectOptions mysqlConnectOptions = toMySQLConnectOptions(dataSourceRuntimeConfig,
                 dataSourceReactiveRuntimeConfig, dataSourceReactiveMySQLConfig);
+        if (dataSourceReactiveRuntimeConfig.threadLocal.isPresent() &&
+                dataSourceReactiveRuntimeConfig.threadLocal.get()) {
+            return new ThreadLocalMySQLPool(vertx, mysqlConnectOptions, poolOptions);
+        }
         return MySQLPool.pool(vertx, mysqlConnectOptions, poolOptions);
     }
 
@@ -90,15 +111,50 @@ public class MySQLPoolRecorder {
             mysqlConnectOptions.setPassword(dataSourceRuntimeConfig.password.get());
         }
 
-        if (dataSourceReactiveMySQLConfig.cachePreparedStatements.isPresent()) {
-            mysqlConnectOptions.setCachePreparedStatements(dataSourceReactiveMySQLConfig.cachePreparedStatements.get());
+        // credentials provider
+        if (dataSourceRuntimeConfig.credentialsProvider.isPresent()) {
+            String beanName = dataSourceRuntimeConfig.credentialsProviderName.orElse(null);
+            CredentialsProvider credentialsProvider = CredentialsProviderFinder.find(beanName);
+            String name = dataSourceRuntimeConfig.credentialsProvider.get();
+            Map<String, String> credentials = credentialsProvider.getCredentials(name);
+            String user = credentials.get(USER_PROPERTY_NAME);
+            String password = credentials.get(PASSWORD_PROPERTY_NAME);
+            if (user != null) {
+                mysqlConnectOptions.setUser(user);
+            }
+            if (password != null) {
+                mysqlConnectOptions.setPassword(password);
+            }
         }
+
+        if (dataSourceReactiveMySQLConfig.cachePreparedStatements.isPresent()) {
+            log.warn(
+                    "datasource.reactive.mysql.cache-prepared-statements is deprecated, use datasource.reactive.cache-prepared-statements instead");
+            mysqlConnectOptions.setCachePreparedStatements(dataSourceReactiveMySQLConfig.cachePreparedStatements.get());
+        } else {
+            mysqlConnectOptions.setCachePreparedStatements(dataSourceReactiveRuntimeConfig.cachePreparedStatements);
+        }
+
         if (dataSourceReactiveMySQLConfig.charset.isPresent()) {
             mysqlConnectOptions.setCharset(dataSourceReactiveMySQLConfig.charset.get());
         }
         if (dataSourceReactiveMySQLConfig.collation.isPresent()) {
             mysqlConnectOptions.setCollation(dataSourceReactiveMySQLConfig.collation.get());
         }
+
+        if (dataSourceReactiveMySQLConfig.sslMode.isPresent()) {
+            mysqlConnectOptions.setSslMode(dataSourceReactiveMySQLConfig.sslMode.get());
+        }
+
+        mysqlConnectOptions.setTrustAll(dataSourceReactiveRuntimeConfig.trustAll);
+
+        configurePemTrustOptions(mysqlConnectOptions, dataSourceReactiveRuntimeConfig.trustCertificatePem);
+        configureJksTrustOptions(mysqlConnectOptions, dataSourceReactiveRuntimeConfig.trustCertificateJks);
+        configurePfxTrustOptions(mysqlConnectOptions, dataSourceReactiveRuntimeConfig.trustCertificatePfx);
+
+        configurePemKeyCertOptions(mysqlConnectOptions, dataSourceReactiveRuntimeConfig.keyCertificatePem);
+        configureJksKeyCertOptions(mysqlConnectOptions, dataSourceReactiveRuntimeConfig.keyCertificateJks);
+        configurePfxKeyCertOptions(mysqlConnectOptions, dataSourceReactiveRuntimeConfig.keyCertificatePfx);
 
         return mysqlConnectOptions;
     }

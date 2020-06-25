@@ -3,7 +3,9 @@ package io.quarkus.amazon.lambda.runtime;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.ConnectException;
 import java.net.HttpURLConnection;
+import java.net.SocketException;
 import java.net.URL;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -45,7 +47,15 @@ public abstract class AbstractLambdaPollLoop {
                     URL requestUrl = AmazonLambdaApi.invocationNext();
                     while (running.get()) {
 
-                        HttpURLConnection requestConnection = (HttpURLConnection) requestUrl.openConnection();
+                        HttpURLConnection requestConnection = null;
+                        try {
+                            requestConnection = (HttpURLConnection) requestUrl.openConnection();
+                        } catch (IOException e) {
+                            if (abortGracefully(e)) {
+                                return;
+                            }
+                            throw e;
+                        }
                         try {
                             String requestId = requestConnection.getHeaderField(AmazonLambdaApi.LAMBDA_RUNTIME_AWS_REQUEST_ID);
                             try {
@@ -54,19 +64,25 @@ public abstract class AbstractLambdaPollLoop {
                                 URL url = AmazonLambdaApi.invocationResponse(requestId);
                                 if (isStream()) {
                                     HttpURLConnection responseConnection = responseStream(url);
-                                    processRequest(requestConnection.getInputStream(), responseConnection.getOutputStream(),
-                                            createContext(requestConnection));
-                                    while (responseConnection.getInputStream().read() != -1) {
-                                        // Read data
+                                    if (running.get()) {
+                                        processRequest(requestConnection.getInputStream(), responseConnection.getOutputStream(),
+                                                createContext(requestConnection));
+                                        while (responseConnection.getInputStream().read() != -1) {
+                                            // Read data
+                                        }
                                     }
                                 } else {
                                     Object input = null;
-                                    if (getInputReader() != null)
+                                    if (running.get() && getInputReader() != null) {
                                         input = getInputReader().readValue(requestConnection.getInputStream());
-                                    Object output = processRequest(input, createContext(requestConnection));
-                                    postResponse(url, output);
+                                        Object output = processRequest(input, createContext(requestConnection));
+                                        postResponse(url, output);
+                                    }
                                 }
                             } catch (Exception e) {
+                                if (abortGracefully(e)) {
+                                    return;
+                                }
                                 log.error("Failed to run lambda", e);
 
                                 postError(AmazonLambdaApi.invocationError(requestId),
@@ -75,14 +91,18 @@ public abstract class AbstractLambdaPollLoop {
                             }
 
                         } catch (Exception e) {
-                            log.error("Error running lambda", e);
+                            if (!abortGracefully(e))
+                                log.error("Error running lambda", e);
                             Application app = Application.currentApplication();
                             if (app != null) {
                                 app.stop();
                             }
                             return;
                         } finally {
-                            requestConnection.getInputStream().close();
+                            try {
+                                requestConnection.getInputStream().close();
+                            } catch (IOException e) {
+                            }
                         }
 
                     }
@@ -166,6 +186,16 @@ public abstract class AbstractLambdaPollLoop {
         responseConnection.setDoOutput(true);
         responseConnection.setRequestMethod("POST");
         return responseConnection;
+    }
+
+    boolean abortGracefully(Exception ex) {
+        // if we are running in test mode, then don't output stack trace for socket errors
+
+        boolean graceful = (ex instanceof SocketException || ex instanceof ConnectException)
+                && System.getProperty(AmazonLambdaApi.QUARKUS_INTERNAL_AWS_LAMBDA_TEST_API) != null;
+        if (graceful)
+            log.warn("Aborting lambda poll loop");
+        return graceful;
     }
 
 }

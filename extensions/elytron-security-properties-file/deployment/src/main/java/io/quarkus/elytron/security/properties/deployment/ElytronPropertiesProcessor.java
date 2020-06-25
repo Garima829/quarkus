@@ -3,6 +3,7 @@ package io.quarkus.elytron.security.properties.deployment;
 import org.jboss.logging.Logger;
 import org.wildfly.security.auth.server.SecurityRealm;
 
+import io.quarkus.deployment.Feature;
 import io.quarkus.deployment.annotations.BuildProducer;
 import io.quarkus.deployment.annotations.BuildStep;
 import io.quarkus.deployment.annotations.ExecutionTime;
@@ -13,6 +14,7 @@ import io.quarkus.elytron.security.deployment.ElytronPasswordMarkerBuildItem;
 import io.quarkus.elytron.security.deployment.SecurityRealmBuildItem;
 import io.quarkus.elytron.security.runtime.ElytronPropertiesFileRecorder;
 import io.quarkus.elytron.security.runtime.MPRealmConfig;
+import io.quarkus.elytron.security.runtime.MPRealmRuntimeConfig;
 import io.quarkus.elytron.security.runtime.PropertiesRealmConfig;
 import io.quarkus.elytron.security.runtime.SecurityUsersConfig;
 import io.quarkus.runtime.RuntimeValue;
@@ -24,11 +26,6 @@ import io.quarkus.runtime.RuntimeValue;
  * and {@linkplain org.wildfly.security.auth.realm.SimpleMapBackedSecurityRealm} realm implementations. Others could be
  * added by creating an extension that produces a SecurityRealmBuildItem for the realm.
  *
- * Additional authentication mechanisms can be added by producing AuthConfigBuildItems and including the associated
- * {@linkplain io.undertow.servlet.ServletExtension} implementations to register the
- * {@linkplain io.undertow.security.api.AuthenticationMechanismFactory}.
- *
- *
  */
 class ElytronPropertiesProcessor {
     private static final Logger log = Logger.getLogger(ElytronPropertiesProcessor.class.getName());
@@ -38,10 +35,11 @@ class ElytronPropertiesProcessor {
     private static final String ROLES_PREFIX = "quarkus.security.embedded.roles";
 
     SecurityUsersConfig propertiesConfig;
+    MPRealmRuntimeConfig runtimeConfig;
 
     @BuildStep
     FeatureBuildItem feature() {
-        return new FeatureBuildItem(FeatureBuildItem.SECURITY_PROPERTIES_FILE);
+        return new FeatureBuildItem(Feature.SECURITY_PROPERTIES_FILE);
     }
 
     /**
@@ -111,7 +109,8 @@ class ElytronPropertiesProcessor {
 
             RuntimeValue<SecurityRealm> realm = recorder.createRealm(realmConfig);
             securityRealm
-                    .produce(new SecurityRealmBuildItem(realm, realmConfig.realmName, recorder.loadRealm(realm, realmConfig)));
+                    .produce(new SecurityRealmBuildItem(realm, realmConfig.realmName,
+                            recorder.loadRealm(realm, realmConfig, runtimeConfig)));
         }
     }
 }

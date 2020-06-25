@@ -16,17 +16,16 @@ import org.eclipse.microprofile.metrics.Metadata;
 import org.eclipse.microprofile.metrics.MetricType;
 import org.eclipse.microprofile.metrics.MetricUnits;
 import org.eclipse.microprofile.metrics.Tag;
-import org.jboss.jandex.AnnotationInstance;
-import org.jboss.jandex.AnnotationValue;
 import org.jboss.jandex.DotName;
 import org.jboss.logging.Logger;
 
 import io.agroal.api.AgroalDataSource;
+import io.agroal.api.AgroalPoolInterceptor;
 import io.quarkus.agroal.DataSource;
 import io.quarkus.agroal.runtime.AgroalRecorder;
 import io.quarkus.agroal.runtime.DataSourceJdbcBuildTimeConfig;
-import io.quarkus.agroal.runtime.DataSourceProducer;
 import io.quarkus.agroal.runtime.DataSourceSupport;
+import io.quarkus.agroal.runtime.DataSources;
 import io.quarkus.agroal.runtime.DataSourcesJdbcBuildTimeConfig;
 import io.quarkus.agroal.runtime.LegacyDataSourceJdbcBuildTimeConfig;
 import io.quarkus.agroal.runtime.LegacyDataSourcesJdbcBuildTimeConfig;
@@ -42,6 +41,8 @@ import io.quarkus.datasource.runtime.DataSourceBuildTimeConfig;
 import io.quarkus.datasource.runtime.DataSourcesBuildTimeConfig;
 import io.quarkus.datasource.runtime.DataSourcesRuntimeConfig;
 import io.quarkus.deployment.Capabilities;
+import io.quarkus.deployment.Capability;
+import io.quarkus.deployment.Feature;
 import io.quarkus.deployment.annotations.BuildProducer;
 import io.quarkus.deployment.annotations.BuildStep;
 import io.quarkus.deployment.annotations.ExecutionTime;
@@ -70,8 +71,8 @@ class AgroalProcessor {
     @BuildStep
     void agroal(BuildProducer<FeatureBuildItem> feature,
             BuildProducer<CapabilityBuildItem> capability) {
-        feature.produce(new FeatureBuildItem(FeatureBuildItem.AGROAL));
-        capability.produce(new CapabilityBuildItem(Capabilities.AGROAL));
+        feature.produce(new FeatureBuildItem(Feature.AGROAL));
+        capability.produce(new CapabilityBuildItem(Capability.AGROAL));
     }
 
     @BuildStep
@@ -122,7 +123,7 @@ class AgroalProcessor {
                 java.sql.ResultSet[].class.getName()));
 
         // Enable SSL support by default
-        sslNativeSupport.produce(new ExtensionSslNativeSupportBuildItem(FeatureBuildItem.AGROAL));
+        sslNativeSupport.produce(new ExtensionSslNativeSupportBuildItem(Feature.AGROAL.getName()));
     }
 
     private static void validateBuildTimeConfig(AggregatedDataSourceBuildTimeConfigBuildItem aggregatedConfig) {
@@ -176,7 +177,7 @@ class AgroalProcessor {
         }
 
         return new DataSourceSupport(sslNativeConfig.isExplicitlyDisabled(),
-                capabilities.isCapabilityPresent(Capabilities.METRICS), dataSourceSupportEntries);
+                capabilities.isPresent(Capability.METRICS), dataSourceSupportEntries);
     }
 
     @Record(ExecutionTime.STATIC_INIT)
@@ -193,16 +194,18 @@ class AgroalProcessor {
         }
 
         // make a DataSourceProducer bean
-        additionalBeans.produce(AdditionalBeanBuildItem.builder().addBeanClasses(DataSourceProducer.class).setUnremovable()
+        additionalBeans.produce(AdditionalBeanBuildItem.builder().addBeanClasses(DataSources.class).setUnremovable()
                 .setDefaultScope(DotNames.SINGLETON).build());
         // add the @DataSource class otherwise it won't be registered as a qualifier
         additionalBeans.produce(AdditionalBeanBuildItem.builder().addBeanClass(DataSource.class).build());
+
+        // add implementations of AgroalPoolInterceptor
+        additionalBeans.produce(AdditionalBeanBuildItem.unremovableOf(AgroalPoolInterceptor.class));
 
         // create the DataSourceSupport bean that DataSourceProducer uses as a dependency
         DataSourceSupport dataSourceSupport = getDataSourceSupport(aggregatedBuildTimeConfigBuildItems, sslNativeConfig,
                 capabilities);
         syntheticBeanBuildItemBuildProducer.produce(SyntheticBeanBuildItem.configure(DataSourceSupport.class)
-                .scope(Singleton.class)
                 .supplier(recorder.dataSourceSupportSupplier(dataSourceSupport))
                 .unremovable()
                 .done());
@@ -244,12 +247,9 @@ class AgroalProcessor {
                 // this definitely not ideal, but 'elytron-jdbc-security' uses it (although it could be easily changed)
                 // which means that perhaps other extensions might depend on this as well...
                 configurator.name(dataSourceName);
-                configurator
-                        .qualifiers(
-                                AnnotationInstance.create(DotNames.NAMED, null,
-                                        new AnnotationValue[] { AnnotationValue.createStringValue("value", dataSourceName) }),
-                                AnnotationInstance.create(DotName.createSimple(DataSource.class.getName()), null,
-                                        new AnnotationValue[] { AnnotationValue.createStringValue("value", dataSourceName) }));
+
+                configurator.addQualifier().annotation(DotNames.NAMED).addValue("value", dataSourceName).done();
+                configurator.addQualifier().annotation(DataSource.class).addValue("value", dataSourceName).done();
             }
 
             syntheticBeanBuildItemBuildProducer.produce(configurator.done());
@@ -443,7 +443,7 @@ class AgroalProcessor {
     @BuildStep
     HealthBuildItem addHealthCheck(DataSourcesBuildTimeConfig dataSourcesBuildTimeConfig) {
         return new HealthBuildItem("io.quarkus.agroal.runtime.health.DataSourceHealthCheck",
-                dataSourcesBuildTimeConfig.healthEnabled, "datasource");
+                dataSourcesBuildTimeConfig.healthEnabled);
     }
 
     @BuildStep

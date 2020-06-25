@@ -45,6 +45,16 @@ If you already have an existing project, add the `mailer` extension:
 ./mvnw quarkus:add-extensions -Dextensions="mailer"
 ----
 
+This will add the following to your `pom.xml`:
+
+[source,xml]
+----
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-mailer</artifactId>
+</dependency>
+----
+
 == Configuring the mailer
 
 The Quarkus mailer is using SMTP. In the `src/main/resources/application.properties` file, you need to configure the host, port, username, password as well as the other configuration aspect.
@@ -219,6 +229,39 @@ When you want to reference your attachment, for instance in the `src` attribute,
 == Message Body Based on Qute Templates
 
 It's also possible to inject a mail template, where the message body is created automatically using link:qute[Qute templates].
+
+[source, java]
+----
+@Path("")
+public class MailingResource {
+
+    @CheckedTemplate
+    class Templates {
+        public static native MailTemplateInstance hello(String name); <1>
+    }
+    
+    @GET
+    @Path("/mail")
+    public CompletionStage<Response> send() {
+        // the template looks like: Hello {name}! <2>
+        return Templates.hello("John")
+           .to("to@acme.org") <3>
+           .subject("Hello from Qute template")
+           .send() <4>
+           .subscribeAsCompletionStage()
+           .thenApply(x -> Response.accepted().build());
+    }
+}
+----
+<1> By convention, the enclosing class name and method names are used to locate the template. In this particular case, 
+we will use the `MailingResource/hello.html` and `MailingResource/hello.txt` templates to create the message body.
+<2> Set the data used in the template.
+<3> Create a mail template instance and set the recipient.
+<4> `MailTemplate.send()` triggers the rendering and, once finished, sends the e-mail via a `Mailer` instance. 
+
+TIP: Injected mail templates are validated during build. If there is no matching template in `src/main/resources/templates` the build fails.
+
+You can also do this without type-safe templates:
 
 [source, java]
 ----

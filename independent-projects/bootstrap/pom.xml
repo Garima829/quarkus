@@ -41,20 +41,20 @@
         <jakarta.inject-api.version>1.0</jakarta.inject-api.version>
         <commons-lang.version>3.9</commons-lang.version>
         <guava.version>27.0.1-jre</guava.version>
-        <asm.version>7.3.1</asm.version>
         <shrinkwrap-depchain.version>1.2.6</shrinkwrap-depchain.version>
+        <jboss-logmanager-embedded.version>1.0.4</jboss-logmanager-embedded.version>
+        <graal-sdk.version>20.1.0</graal-sdk.version>
+        <plexus-classworlds.version>2.6.0</plexus-classworlds.version> <!-- not actually used but ClassRealm class is referenced from the API used in BootstrapWagonConfigurator -->
     </properties>
     <modules>
+        <module>app-model</module>
+        <module>maven-resolver</module>
         <module>core</module>
         <module>maven-plugin</module>
+        <module>runner</module>
     </modules>
     <dependencyManagement>
         <dependencies>
-            <dependency>
-                <groupId>org.ow2.asm</groupId>
-                <artifactId>asm</artifactId>
-                <version>${asm.version}</version>
-            </dependency>
             <dependency>
                 <groupId>com.google.guava</groupId>
                 <artifactId>guava</artifactId>
@@ -76,6 +76,16 @@
                 <version>${project.version}</version>
                 <type>test-jar</type>
                 <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-bootstrap-app-model</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-bootstrap-maven-resolver</artifactId>
+                <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>io.quarkus</groupId>
@@ -141,10 +151,6 @@
                     <exclusion>
                         <groupId>javax.enterprise</groupId>
                         <artifactId>cdi-api</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.codehaus.plexus</groupId>
-                        <artifactId>plexus-classworlds</artifactId>
                     </exclusion>
                     <exclusion>
                         <groupId>org.checkerframework</groupId>
@@ -267,18 +273,20 @@
                 <version>${sisu.version}</version>
                 <exclusions>
                     <exclusion>
-                        <groupId>org.codehaus.plexus</groupId>
-                        <artifactId>plexus-component-annotations</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.codehaus.plexus</groupId>
-                        <artifactId>plexus-utils</artifactId>
-                    </exclusion>
-                    <exclusion>
-                        <groupId>org.codehaus.plexus</groupId>
-                        <artifactId>plexus-classworlds</artifactId>
+                        <groupId>*</groupId>
+                        <artifactId>*</artifactId>
                     </exclusion>
                 </exclusions>
+            </dependency>
+            <dependency>
+                <groupId>org.graalvm.sdk</groupId>
+                <artifactId>graal-sdk</artifactId>
+                <version>${graal-sdk.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.jboss.logmanager</groupId>
+                <artifactId>jboss-logmanager-embedded</artifactId>
+                <version>${jboss-logmanager-embedded.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.jboss.logging</groupId>
@@ -289,6 +297,17 @@
                 <groupId>org.jboss.logging</groupId>
                 <artifactId>commons-logging-jboss-logging</artifactId>
                 <version>${commons-logging-jboss-logging.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.codehaus.plexus</groupId>
+                <artifactId>plexus-classworlds</artifactId>
+                <version>${plexus-classworlds.version}</version>
+                <exclusions>
+                    <exclusion>
+                        <groupId>*</groupId>
+                        <artifactId>*</artifactId>
+                    </exclusion>
+                </exclusions>
             </dependency>
             <dependency>
                 <groupId>org.junit.jupiter</groupId>
@@ -423,6 +442,7 @@
                     </dependencies>
                     <configuration>
                         <configFile>eclipse-format.xml</configFile>
+                        <lineEnding>LF</lineEnding>
                         <skip>${format.skip}</skip>
                     </configuration>
                 </plugin>
@@ -435,7 +455,7 @@
                         <skip>${format.skip}</skip>
                     </configuration>
                 </plugin>
-                </plugins>
+            </plugins>
         </pluginManagement>
     </build>
 

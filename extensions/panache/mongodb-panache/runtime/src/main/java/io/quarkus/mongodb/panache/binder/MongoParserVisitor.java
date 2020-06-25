@@ -54,7 +54,13 @@ class MongoParserVisitor extends HqlParserBaseVisitor<String> {
 
     @Override
     public String visitLikePredicate(HqlParser.LikePredicateContext ctx) {
-        return ctx.expression(0).accept(this) + ":{'$regex':" + ctx.expression(1).accept(this) + "}";
+        String parameter = ctx.expression(1).accept(this);
+        if (parameter.indexOf('/') == 1 && parameter.lastIndexOf('/') > 1) {
+            // In case we have something like '/.*/.*' we are in a JavaScript regex so we must unescape the parameter.
+            // We do this here instead of inside visitParameterExpression to avoid unescaping for non-regex parameters.
+            parameter = parameter.substring(1, parameter.length() - 1);
+        }
+        return ctx.expression(0).accept(this) + ":{'$regex':" + parameter + "}";
     }
 
     @Override
@@ -99,5 +105,14 @@ class MongoParserVisitor extends HqlParserBaseVisitor<String> {
     public String visitPathExpression(HqlParser.PathExpressionContext ctx) {
         // this is the name of the field, we apply replacement and escape with '
         return "'" + replacementMap.getOrDefault(ctx.getText(), ctx.getText()) + "'";
+    }
+
+    @Override
+    public String visitInPredicate(HqlParser.InPredicateContext ctx) {
+        StringBuilder sb = new StringBuilder(ctx.expression().accept(this))
+                .append(":{'$in':[")
+                .append(ctx.inList().accept(this))
+                .append("]}");
+        return sb.toString();
     }
 }

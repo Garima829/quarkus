@@ -54,6 +54,24 @@ cd kafka-quickstart
 
 This command generates a Maven project, importing the Reactive Messaging and Kafka connector extensions.
 
+If you already have your Quarkus project configured, you can add the `smallrye-reactive-messaging-kafka` extension
+to your project by running the following command in your project base directory:
+
+[source,bash]
+----
+./mvnw quarkus:add-extension -Dextensions="kafka"
+----
+
+This will add the following to your `pom.xml`:
+
+[source,xml]
+----
+<dependency>
+    <groupId>io.quarkus</groupId>
+    <artifactId>quarkus-smallrye-reactive-messaging-kafka</artifactId>
+</dependency>
+----
+
 == Starting Kafka
 
 Then, we need a Kafka cluster.
@@ -424,13 +442,13 @@ NOTE: With JSON serialization correctly configured, you can also use `Publisher<
 
 === Serializing via JSON-B
 
-First, you need to include the `quarkus-resteasy-jsonb` extension (if you already use the `quarkus-resteasy-jsonb` extension, this is not needed).
+First, you need to include the `quarkus-jsonb` extension (if you already use the `quarkus-resteasy-jsonb` extension, this is not needed).
 
 [source, xml]
 ----
 <dependency>
     <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-resteasy-jsonb</artifactId>
+    <artifactId>quarkus-jsonb</artifactId>
 </dependency>
 ----
 
@@ -475,13 +493,13 @@ Now, your Kafka messages will contain a JSON-B serialized representation of your
 
 === Serializing via Jackson
 
-First, you need to include the `quarkus-resteasy-jackson` extension (if you already use the `quarkus-jackson-jsonb` extension, this is not needed).
+First, you need to include the `quarkus-jackson` extension (if you already use the `quarkus-resteasy-jackson` extension, this is not needed).
 
 [source, xml]
 ----
 <dependency>
     <groupId>io.quarkus</groupId>
-    <artifactId>quarkus-resteasy-jackson</artifactId>
+    <artifactId>quarkus-jackson</artifactId>
 </dependency>
 ----
 
@@ -555,6 +573,40 @@ public class PriceResource {
     }
 }
 ----
+
+== Blocking processing
+
+You often need to combine Reactive Messaging with blocking processing such as database interactions.
+For this, you need to use the `@Blocking` annotation indicating that the processing is _blocking_ and cannot be run on the caller thread.
+
+For example, The following code illustrates how you can store incoming payloads to a database using Hibernate with Panache:
+
+[source,java]
+----
+package org.acme.panache;
+
+import io.smallrye.reactive.messaging.annotations.Blocking;
+import org.eclipse.microprofile.reactive.messaging.Incoming;
+
+import javax.enterprise.context.ApplicationScoped;
+import javax.transaction.Transactional;
+
+@ApplicationScoped
+public class PriceStorage {
+
+    @Incoming("prices")
+    @Blocking
+    @Transactional
+    public void store(int priceInUsd) {
+        Price price = new Price();
+        price.value = priceInUsd;
+        price.persist();
+    }
+
+}
+----
+
+The complete example is available in the `kafka-panache-quickstart` {quickstarts-tree-url}/kafka-panache-quickstart[directory].
 
 == Going further
 

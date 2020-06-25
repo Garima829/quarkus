@@ -8,18 +8,23 @@ import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.ServiceLoader;
 import java.util.concurrent.LinkedBlockingDeque;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
+
+import javax.enterprise.inject.Alternative;
 
 import org.eclipse.microprofile.config.spi.ConfigProviderResolver;
 import org.jboss.jandex.AnnotationInstance;
@@ -28,6 +33,7 @@ import org.jboss.jandex.ClassInfo;
 import org.jboss.jandex.FieldInfo;
 import org.jboss.jandex.Index;
 import org.jboss.jandex.Type;
+import org.jboss.logging.Logger;
 import org.junit.jupiter.api.extension.AfterAllCallback;
 import org.junit.jupiter.api.extension.AfterEachCallback;
 import org.junit.jupiter.api.extension.BeforeAllCallback;
@@ -41,19 +47,20 @@ import org.junit.jupiter.api.extension.ReflectiveInvocationContext;
 import org.junit.jupiter.api.extension.TestInstantiationException;
 import org.opentest4j.TestAbortedException;
 
-import io.quarkus.bootstrap.app.AdditionalDependency;
 import io.quarkus.bootstrap.app.AugmentAction;
 import io.quarkus.bootstrap.app.CuratedApplication;
 import io.quarkus.bootstrap.app.QuarkusBootstrap;
 import io.quarkus.bootstrap.app.RunningQuarkusApplication;
 import io.quarkus.bootstrap.app.StartupAction;
+import io.quarkus.bootstrap.model.PathsCollection;
+import io.quarkus.bootstrap.runner.Timing;
 import io.quarkus.builder.BuildChainBuilder;
 import io.quarkus.builder.BuildContext;
 import io.quarkus.builder.BuildStep;
 import io.quarkus.deployment.builditem.TestAnnotationBuildItem;
 import io.quarkus.deployment.builditem.TestClassBeanBuildItem;
 import io.quarkus.deployment.builditem.TestClassPredicateBuildItem;
-import io.quarkus.runtime.Timing;
+import io.quarkus.runtime.configuration.ProfileManager;
 import io.quarkus.test.common.PathTestHelper;
 import io.quarkus.test.common.PropertyTestUtil;
 import io.quarkus.test.common.RestAssuredURLManager;
@@ -65,11 +72,16 @@ import io.quarkus.test.junit.buildchain.TestBuildChainCustomizerProducer;
 import io.quarkus.test.junit.callback.QuarkusTestAfterEachCallback;
 import io.quarkus.test.junit.callback.QuarkusTestBeforeAllCallback;
 import io.quarkus.test.junit.callback.QuarkusTestBeforeEachCallback;
+import io.quarkus.test.junit.callback.QuarkusTestMethodContext;
+import io.quarkus.test.junit.internal.DeepClone;
+import io.quarkus.test.junit.internal.XStreamDeepClone;
 
 //todo: share common core with QuarkusUnitTest
 public class QuarkusTestExtension
         implements BeforeEachCallback, AfterEachCallback, BeforeAllCallback, InvocationInterceptor, AfterAllCallback,
         ParameterResolver {
+
+    private static final Logger log = Logger.getLogger(QuarkusTestExtension.class);
 
     protected static final String TEST_LOCATION = "test-location";
     protected static final String TEST_CLASS = "test-class";
@@ -86,8 +98,13 @@ public class QuarkusTestExtension
     private static List<Object> beforeAllCallbacks = new ArrayList<>();
     private static List<Object> beforeEachCallbacks = new ArrayList<>();
     private static List<Object> afterEachCallbacks = new ArrayList<>();
+    private static Class<?> quarkusTestMethodContextClass;
+    private static Class<? extends QuarkusTestProfile> quarkusTestProfile;
 
-    private ExtensionState doJavaStart(ExtensionContext context) throws Throwable {
+    private static DeepClone deepClone;
+
+    private ExtensionState doJavaStart(ExtensionContext context, Class<? extends QuarkusTestProfile> profile) throws Throwable {
+        quarkusTestProfile = profile;
         Closeable testResourceManager = null;
         try {
             final LinkedBlockingDeque<Runnable> shutdownTasks = new LinkedBlockingDeque<>();
@@ -96,32 +113,60 @@ public class QuarkusTestExtension
             testClassLocation = getTestClassesLocation(requiredTestClass);
             final Path appClassLocation = getAppClassLocationForTestLocation(testClassLocation.toString());
 
+            PathsCollection.Builder rootBuilder = PathsCollection.builder();
+
+            if (!appClassLocation.equals(testClassLocation)) {
+                rootBuilder.add(testClassLocation);
+                // if test classes is a dir, we should also check whether test resources dir exists as a separate dir (gradle)
+                // TODO: this whole app/test path resolution logic is pretty dumb, it needs be re-worked using proper workspace discovery
+                final Path testResourcesLocation = PathTestHelper.getResourcesForClassesDirOrNull(testClassLocation, "test");
+                if (testResourcesLocation != null) {
+                    rootBuilder.add(testResourcesLocation);
+                }
+            }
             originalCl = Thread.currentThread().getContextClassLoader();
+            Map<String, String> sysPropRestore = new HashMap<>();
+            sysPropRestore.put(ProfileManager.QUARKUS_TEST_PROFILE_PROP,
+                    System.getProperty(ProfileManager.QUARKUS_TEST_PROFILE_PROP));
 
             final QuarkusBootstrap.Builder runnerBuilder = QuarkusBootstrap.builder()
                     .setIsolateDeployment(true)
                     .setMode(QuarkusBootstrap.Mode.TEST);
-
-            if (Files.isDirectory(appClassLocation)) {
-                // this is a project that is a part of the workspace
-                runnerBuilder.setProjectRoot(Paths.get("").normalize().toAbsolutePath());
-            } else {
-                // this is an external JAR
-                runnerBuilder.setApplicationRoot(appClassLocation);
-            }
-
-            if (!appClassLocation.equals(testClassLocation)) {
-                runnerBuilder.addAdditionalApplicationArchive(AdditionalDependency.test(testClassLocation));
-                // if test classes is a dir, we should also check whether test resources dir exists as a separate dir (gradle)
-                // TODO: this whole app/test path resolution logic is pretty dumb, it needs be re-worked using proper workspace discovery
-                if (Files.isDirectory(testClassLocation)) {
-                    final Path testResourcesLocation = testClassLocation.getParent().getParent().getParent()
-                            .resolve("resources").resolve("test");
-                    if (Files.exists(testResourcesLocation)) {
-                        runnerBuilder.addAdditionalApplicationArchive(AdditionalDependency.test(testResourcesLocation));
-                    }
+            if (profile != null) {
+                QuarkusTestProfile profileInstance = profile.newInstance();
+                Map<String, String> additional = new HashMap<>(profileInstance.getConfigOverrides());
+                if (!profileInstance.getEnabledAlternatives().isEmpty()) {
+                    additional.put("quarkus.arc.selected-alternatives", profileInstance.getEnabledAlternatives().stream()
+                            .peek((c) -> {
+                                if (!c.isAnnotationPresent(Alternative.class)) {
+                                    throw new RuntimeException(
+                                            "Enabled alternative " + c + " is not annotated with @Alternative");
+                                }
+                            })
+                            .map(Class::getName).collect(Collectors.joining(",")));
+                }
+                if (profileInstance.getConfigProfile() != null) {
+                    System.setProperty(ProfileManager.QUARKUS_TEST_PROFILE_PROP, profileInstance.getConfigProfile());
+                }
+                //we just use system properties for now
+                //its a lot simpler
+                for (Map.Entry<String, String> i : additional.entrySet()) {
+                    sysPropRestore.put(i.getKey(), System.getProperty(i.getKey()));
+                }
+                for (Map.Entry<String, String> i : additional.entrySet()) {
+                    System.setProperty(i.getKey(), i.getValue());
                 }
             }
+
+            runnerBuilder.setProjectRoot(Paths.get("").normalize().toAbsolutePath());
+
+            rootBuilder.add(appClassLocation);
+            final Path appResourcesLocation = PathTestHelper.getResourcesForClassesDirOrNull(appClassLocation, "main");
+            if (appResourcesLocation != null) {
+                rootBuilder.add(appResourcesLocation);
+            }
+
+            runnerBuilder.setApplicationRoot(rootBuilder.build());
 
             CuratedApplication curatedApplication = runnerBuilder
                     .setTest(true)
@@ -139,11 +184,13 @@ public class QuarkusTestExtension
             AugmentAction augmentAction = curatedApplication.createAugmentor(TestBuildChainFunction.class.getName(), props);
             StartupAction startupAction = augmentAction.createInitialRuntimeApplication();
             Thread.currentThread().setContextClassLoader(startupAction.getClassLoader());
+            populateDeepCloneField(startupAction);
 
             //must be done after the TCCL has been set
             testResourceManager = (Closeable) startupAction.getClassLoader().loadClass(TestResourceManager.class.getName())
                     .getConstructor(Class.class)
                     .newInstance(requiredTestClass);
+            testResourceManager.getClass().getMethod("init").invoke(testResourceManager);
             testResourceManager.getClass().getMethod("start").invoke(testResourceManager);
 
             populateCallbacks(startupAction.getClassLoader());
@@ -168,24 +215,27 @@ public class QuarkusTestExtension
                                 shutdownTasks.pop().run();
                             }
                         } finally {
+                            for (Map.Entry<String, String> entry : sysPropRestore.entrySet()) {
+                                String val = entry.getValue();
+                                if (val == null) {
+                                    System.clearProperty(entry.getKey());
+                                } else {
+                                    System.setProperty(entry.getKey(), val);
+                                }
+                            }
                             tm.close();
                         }
                     }
                 }
             };
+            ExtensionState state = new ExtensionState(testResourceManager, shutdownTask);
             Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
                 @Override
                 public void run() {
-                    try {
-                        shutdownTask.close();
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    } finally {
-                        curatedApplication.close();
-                    }
+                    state.close();
                 }
             }, "Quarkus Test Cleanup Shutdown task"));
-            return new ExtensionState(testResourceManager, shutdownTask);
+            return state;
         } catch (Throwable e) {
 
             try {
@@ -196,7 +246,16 @@ public class QuarkusTestExtension
                 e.addSuppressed(ex);
             }
             throw e;
+        } finally {
+            if (originalCl != null) {
+                Thread.currentThread().setContextClassLoader(originalCl);
+            }
         }
+    }
+
+    // keep it super simple for now, but we might need multiple strategies in the future
+    private void populateDeepCloneField(StartupAction startupAction) {
+        deepClone = new XStreamDeepClone(startupAction.getClassLoader());
     }
 
     private void populateCallbacks(ClassLoader classLoader) throws ClassNotFoundException {
@@ -218,6 +277,35 @@ public class QuarkusTestExtension
     }
 
     @Override
+    public void beforeEach(ExtensionContext context) throws Exception {
+        if (isNativeTest(context)) {
+            return;
+        }
+        if (!failedBoot) {
+            ClassLoader original = setCCL(runningQuarkusApplication.getClassLoader());
+            try {
+                pushMockContext();
+                for (Object beforeEachCallback : beforeEachCallbacks) {
+                    Map.Entry<Class<?>, ?> tuple = createQuarkusTestMethodContextTuple(context);
+                    beforeEachCallback.getClass().getMethod("beforeEach", tuple.getKey())
+                            .invoke(beforeEachCallback, tuple.getValue());
+                }
+                if (runningQuarkusApplication != null) {
+                    runningQuarkusApplication.getClassLoader().loadClass(RestAssuredURLManager.class.getName())
+                            .getDeclaredMethod("setURL", boolean.class).invoke(null, false);
+                    runningQuarkusApplication.getClassLoader().loadClass(TestScopeManager.class.getName())
+                            .getDeclaredMethod("setup", boolean.class).invoke(null, false);
+                }
+            } finally {
+                setCCL(original);
+            }
+        } else {
+            throwBootFailureException();
+            return;
+        }
+    }
+
+    @Override
     public void afterEach(ExtensionContext context) throws Exception {
         if (isNativeTest(context)) {
             return;
@@ -225,57 +313,59 @@ public class QuarkusTestExtension
         if (!failedBoot) {
             popMockContext();
             for (Object afterEachCallback : afterEachCallbacks) {
-                afterEachCallback.getClass().getMethod("afterEach", Object.class).invoke(afterEachCallback, actualTestInstance);
+                Map.Entry<Class<?>, ?> tuple = createQuarkusTestMethodContextTuple(context);
+                afterEachCallback.getClass().getMethod("afterEach", tuple.getKey())
+                        .invoke(afterEachCallback, tuple.getValue());
             }
-            boolean nativeImageTest = isNativeTest(context);
-            runningQuarkusApplication.getClassLoader().loadClass(RestAssuredURLManager.class.getName())
-                    .getDeclaredMethod("clearURL").invoke(null);
-            runningQuarkusApplication.getClassLoader().loadClass(TestScopeManager.class.getName())
-                    .getDeclaredMethod("tearDown", boolean.class).invoke(null, nativeImageTest);
+            ClassLoader original = setCCL(runningQuarkusApplication.getClassLoader());
+            try {
+                runningQuarkusApplication.getClassLoader().loadClass(RestAssuredURLManager.class.getName())
+                        .getDeclaredMethod("clearURL").invoke(null);
+                runningQuarkusApplication.getClassLoader().loadClass(TestScopeManager.class.getName())
+                        .getDeclaredMethod("tearDown", boolean.class).invoke(null, false);
+            } finally {
+                setCCL(original);
+            }
         }
+    }
+
+    private Map.Entry<Class<?>, ?> createQuarkusTestMethodContextTuple(ExtensionContext context) throws Exception {
+        if (quarkusTestMethodContextClass == null) {
+            quarkusTestMethodContextClass = Class.forName(QuarkusTestMethodContext.class.getName(), true,
+                    runningQuarkusApplication.getClassLoader());
+        }
+        Constructor<?> constructor = quarkusTestMethodContextClass.getConstructor(Object.class, Method.class);
+        return new AbstractMap.SimpleEntry<>(quarkusTestMethodContextClass,
+                constructor.newInstance(actualTestInstance, context.getRequiredTestMethod()));
     }
 
     private boolean isNativeTest(ExtensionContext context) {
         return context.getRequiredTestClass().isAnnotationPresent(NativeImageTest.class);
     }
 
-    @Override
-    public void beforeEach(ExtensionContext context) throws Exception {
-        if (isNativeTest(context)) {
-            return;
-        }
-        if (!failedBoot) {
-            pushMockContext();
-            for (Object beforeEachCallback : beforeEachCallbacks) {
-                beforeEachCallback.getClass().getMethod("beforeEach", Object.class).invoke(beforeEachCallback,
-                        actualTestInstance);
-            }
-            boolean nativeImageTest = isNativeTest(context);
-            if (runningQuarkusApplication != null) {
-                runningQuarkusApplication.getClassLoader().loadClass(RestAssuredURLManager.class.getName())
-                        .getDeclaredMethod("setURL", boolean.class).invoke(null, false);
-                runningQuarkusApplication.getClassLoader().loadClass(TestScopeManager.class.getName())
-                        .getDeclaredMethod("setup", boolean.class).invoke(null, nativeImageTest);
-            }
-        } else {
-            if (firstException != null) {
-                Throwable throwable = firstException;
-                firstException = null;
-                throw new RuntimeException(throwable);
-            } else {
-                throw new TestAbortedException("Boot failed");
-            }
-        }
-    }
-
     private ExtensionState ensureStarted(ExtensionContext extensionContext) {
         ExtensionContext root = extensionContext.getRoot();
         ExtensionContext.Store store = root.getStore(ExtensionContext.Namespace.GLOBAL);
         ExtensionState state = store.get(ExtensionState.class.getName(), ExtensionState.class);
-        if (state == null && !failedBoot) {
+        TestProfile annotation = extensionContext.getRequiredTestClass().getAnnotation(TestProfile.class);
+        Class<? extends QuarkusTestProfile> selectedProfile = null;
+        if (annotation != null) {
+            selectedProfile = annotation.value();
+        }
+        boolean wrongProfile = !Objects.equals(selectedProfile, quarkusTestProfile);
+        if ((state == null && !failedBoot) || wrongProfile) {
+            if (wrongProfile) {
+                if (state != null) {
+                    try {
+                        state.close();
+                    } catch (Throwable throwable) {
+                        throwable.printStackTrace();
+                    }
+                }
+            }
             PropertyTestUtil.setLogFileProperty();
             try {
-                state = doJavaStart(extensionContext);
+                state = doJavaStart(extensionContext, selectedProfile);
                 store.put(ExtensionState.class.getName(), state);
 
             } catch (Throwable e) {
@@ -293,6 +383,16 @@ public class QuarkusTestExtension
         return original;
     }
 
+    private void throwBootFailureException() throws Exception {
+        if (firstException != null) {
+            Throwable throwable = firstException;
+            firstException = null;
+            throw new RuntimeException(throwable);
+        } else {
+            throw new TestAbortedException("Boot failed");
+        }
+    }
+
     @Override
     public void beforeAll(ExtensionContext context) throws Exception {
         if (isNativeTest(context)) {
@@ -301,7 +401,6 @@ public class QuarkusTestExtension
         ensureStarted(context);
         if (runningQuarkusApplication != null) {
             pushMockContext();
-            setCCL(runningQuarkusApplication.getClassLoader());
         }
     }
 
@@ -339,6 +438,10 @@ public class QuarkusTestExtension
             return;
         }
         ensureStarted(extensionContext);
+        if (failedBoot) {
+            throwBootFailureException();
+            return;
+        }
         runExtensionMethod(invocationContext, extensionContext);
         invocation.skip();
     }
@@ -371,11 +474,15 @@ public class QuarkusTestExtension
         // We do this here as well, because when @TestInstance(Lifecycle.PER_CLASS) is used on a class,
         // interceptTestClassConstructor is called before beforeAll, meaning that the TCCL will not be set correctly
         // (for any test other than the first) unless this is done
+        old = null;
         if (runningQuarkusApplication != null) {
-            setCCL(runningQuarkusApplication.getClassLoader());
+            old = setCCL(runningQuarkusApplication.getClassLoader());
         }
 
         initTestState(extensionContext, state);
+        if (old != null) {
+            setCCL(old);
+        }
         return result;
     }
 
@@ -468,10 +575,10 @@ public class QuarkusTestExtension
             throws Throwable {
         Method newMethod = null;
 
+        ClassLoader old = setCCL(runningQuarkusApplication.getClassLoader());
         try {
             Class<?> c = Class.forName(extensionContext.getRequiredTestClass().getName(), true,
                     Thread.currentThread().getContextClassLoader());
-            ;
             while (c != Object.class) {
                 if (c.getName().equals(invocationContext.getExecutable().getDeclaringClass().getName())) {
                     try {
@@ -500,19 +607,12 @@ public class QuarkusTestExtension
             }
             newMethod.setAccessible(true);
 
-            // the arguments were not loaded from TCCL so we need to try and "convert" if possible
-            // most of the time this won't be possible or necessary, but for the widely used enum case we need to do it
-            // this is a total hack, but...
+            // the arguments were not loaded from TCCL so we need to deep clone them into the TCCL
+            // because the test method runs from a class loaded from the TCCL
             List<Object> originalArguments = invocationContext.getArguments();
             List<Object> argumentsFromTccl = new ArrayList<>();
             for (Object arg : originalArguments) {
-                if (arg != null && arg.getClass().isEnum()) {
-                    argumentsFromTccl.add(Enum.valueOf((Class<Enum>) Class.forName(arg.getClass().getName(), false,
-                            Thread.currentThread().getContextClassLoader()), arg.toString()));
-                } else {
-                    // we can't do anything but hope for the best...
-                    argumentsFromTccl.add(arg);
-                }
+                argumentsFromTccl.add(deepClone.clone(arg));
             }
 
             return newMethod.invoke(actualTestInstance, argumentsFromTccl.toArray(new Object[0]));
@@ -520,6 +620,8 @@ public class QuarkusTestExtension
             throw e.getCause();
         } catch (IllegalAccessException | ClassNotFoundException e) {
             throw new RuntimeException(e);
+        } finally {
+            setCCL(old);
         }
     }
 
@@ -576,6 +678,7 @@ public class QuarkusTestExtension
 
         private final Closeable testResourceManager;
         private final Closeable resource;
+        private final AtomicBoolean closed = new AtomicBoolean();
 
         ExtensionState(Closeable testResourceManager, Closeable resource) {
             this.testResourceManager = testResourceManager;
@@ -583,14 +686,28 @@ public class QuarkusTestExtension
         }
 
         @Override
-        public void close() throws Throwable {
-            try {
-                resource.close();
-            } finally {
-                if (QuarkusTestExtension.this.originalCl != null) {
-                    setCCL(QuarkusTestExtension.this.originalCl);
+        public void close() {
+            if (closed.compareAndSet(false, true)) {
+                ClassLoader old = Thread.currentThread().getContextClassLoader();
+                if (runningQuarkusApplication != null) {
+                    Thread.currentThread().setContextClassLoader(runningQuarkusApplication.getClassLoader());
                 }
-                testResourceManager.close();
+                try {
+                    resource.close();
+                } catch (Throwable e) {
+                    log.error("Failed to shutdown Quarkus", e);
+                } finally {
+                    try {
+                        if (QuarkusTestExtension.this.originalCl != null) {
+                            setCCL(QuarkusTestExtension.this.originalCl);
+                        }
+                        testResourceManager.close();
+                    } catch (IOException e) {
+                        log.error("Failed to shutdown Quarkus test resources", e);
+                    } finally {
+                        Thread.currentThread().setContextClassLoader(old);
+                    }
+                }
             }
         }
     }

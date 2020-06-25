@@ -1,6 +1,7 @@
 package io.quarkus.hibernate.orm.runtime;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -13,6 +14,7 @@ import javax.inject.Singleton;
 import javax.persistence.EntityManagerFactory;
 import javax.persistence.Persistence;
 
+import org.hibernate.MultiTenancyStrategy;
 import org.jboss.logging.Logger;
 
 @Singleton
@@ -22,18 +24,42 @@ public class JPAConfig {
 
     private final AtomicBoolean jtaEnabled;
 
+    private final AtomicReference<MultiTenancyStrategy> multiTenancyStrategy;
+
+    private final AtomicReference<String> multiTenancySchemaDataSource;
+
     private final Map<String, LazyPersistenceUnit> persistenceUnits;
 
     private final AtomicReference<String> defaultPersistenceUnitName;
 
     public JPAConfig() {
         this.jtaEnabled = new AtomicBoolean();
+        this.multiTenancyStrategy = new AtomicReference<MultiTenancyStrategy>();
+        this.multiTenancySchemaDataSource = new AtomicReference<String>();
         this.persistenceUnits = new ConcurrentHashMap<>();
         this.defaultPersistenceUnitName = new AtomicReference<String>();
     }
 
     void setJtaEnabled(boolean value) {
         jtaEnabled.set(value);
+    }
+
+    /**
+     * Sets the strategy for multitenancy.
+     * 
+     * @param strategy Strategy to use.
+     */
+    void setMultiTenancyStrategy(MultiTenancyStrategy strategy) {
+        multiTenancyStrategy.set(strategy);
+    }
+
+    /**
+     * Sets the name of the data source that should be used in case of {@link MultiTenancyStrategy#SCHEMA} approach.
+     * 
+     * @param dataSourceName Name to use or {@literal null} for the default data source.
+     */
+    void setMultiTenancySchemaDataSource(String dataSourceName) {
+        multiTenancySchemaDataSource.set(dataSourceName);
     }
 
     public EntityManagerFactory getEntityManagerFactory(String unitName) {
@@ -67,6 +93,33 @@ public class JPAConfig {
 
     boolean isJtaEnabled() {
         return jtaEnabled.get();
+    }
+
+    /**
+     * Returns the registered persistence units.
+     *
+     * @return Set containing the names of all registered persistence units.
+     */
+    public Set<String> getPersistenceUnits() {
+        return persistenceUnits.keySet();
+    }
+
+    /**
+     * Returns the selected multitenancy strategy.
+     * 
+     * @return Strategy to use.
+     */
+    public MultiTenancyStrategy getMultiTenancyStrategy() {
+        return multiTenancyStrategy.get();
+    }
+
+    /**
+     * Determines which data source should be used in case of {@link MultiTenancyStrategy#SCHEMA} approach.
+     * 
+     * @return Data source name or {@link null} in case the default data source should be used.
+     */
+    public String getMultiTenancySchemaDataSource() {
+        return multiTenancySchemaDataSource.get();
     }
 
     /**

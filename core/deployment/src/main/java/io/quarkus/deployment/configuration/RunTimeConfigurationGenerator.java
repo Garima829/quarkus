@@ -3,6 +3,7 @@ package io.quarkus.deployment.configuration;
 import static io.quarkus.deployment.util.ReflectUtil.reportError;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -231,14 +232,21 @@ public final class RunTimeConfigurationGenerator {
     // todo: more space-efficient sorted map impl
     static final MethodDescriptor TM_NEW = MethodDescriptor.ofConstructor(TreeMap.class);
 
+    static final MethodDescriptor EMPTY_PARSER = MethodDescriptor.ofMethod(CONFIG_CLASS_NAME, "emptyParseKey", void.class,
+            SmallRyeConfig.class, NameIterator.class);
+    static final MethodDescriptor RT_EMPTY_PARSER = MethodDescriptor.ofMethod(CONFIG_CLASS_NAME, "rtEmptyParseKey", void.class,
+            SmallRyeConfig.class, NameIterator.class);
+
     private RunTimeConfigurationGenerator() {
     }
 
     public static void generate(BuildTimeConfigurationReader.ReadResult readResult, final ClassOutput classOutput,
             boolean devMode,
-            final Map<String, String> runTimeDefaults, List<Class<?>> additionalTypes) {
+            final Map<String, String> runTimeDefaults, List<Class<?>> additionalTypes,
+            List<String> additionalBootstrapConfigSourceProviders) {
         new GenerateOperation.Builder().setBuildTimeReadResult(readResult).setClassOutput(classOutput).setDevMode(devMode)
-                .setRunTimeDefaults(runTimeDefaults).setAdditionalTypes(additionalTypes).build().run();
+                .setRunTimeDefaults(runTimeDefaults).setAdditionalTypes(additionalTypes)
+                .setAdditionalBootstrapConfigSourceProviders(additionalBootstrapConfigSourceProviders).build().run();
     }
 
     static final class GenerateOperation implements AutoCloseable {
@@ -267,6 +275,7 @@ public final class RunTimeConfigurationGenerator {
         final ResultHandle clinitConfig;
         final Map<FieldDescriptor, Class<?>> convertersToRegister = new HashMap<>();
         final List<Class<?>> additionalTypes;
+        final List<String> additionalBootstrapConfigSourceProviders;
         /**
          * Regular converters organized by type. Each converter is stored in a separate field. Some are used
          * only at build time, some only at run time, and some at both times.
@@ -296,7 +305,9 @@ public final class RunTimeConfigurationGenerator {
             roots = Assert.checkNotNullParam("builder.roots", builder.getBuildTimeReadResult().getAllRoots());
             runTimeDefaults = Assert.checkNotNullParam("runTimeDefaults", builder.getRunTimeDefaults());
             additionalTypes = Assert.checkNotNullParam("additionalTypes", builder.getAdditionalTypes());
+            additionalBootstrapConfigSourceProviders = builder.additionalBootstrapConfigSourceProviders;
             cc = ClassCreator.builder().classOutput(classOutput).className(CONFIG_CLASS_NAME).setFinal(true).build();
+            generateEmptyParsers(cc);
             // not instantiable
             try (MethodCreator mc = cc.getMethodCreator(MethodDescriptor.ofConstructor(CONFIG_CLASS_NAME))) {
                 mc.setModifiers(Opcodes.ACC_PRIVATE);
@@ -557,6 +568,13 @@ public final class RunTimeConfigurationGenerator {
             // put sources in the bootstrap builder
             if (bootstrapConfigSetupNeeded()) {
                 readBootstrapConfig.invokeVirtualMethod(SRCB_WITH_SOURCES, bootstrapBuilder, bootstrapConfigSourcesArray);
+
+                // add additional providers
+                for (String providerClass : additionalBootstrapConfigSourceProviders) {
+                    ResultHandle providerInstance = readBootstrapConfig
+                            .newInstance(MethodDescriptor.ofConstructor(providerClass));
+                    readBootstrapConfig.invokeStaticMethod(CU_ADD_SOURCE_PROVIDER, bootstrapBuilder, providerInstance);
+                }
             }
             // put sources in the builder
             readConfig.invokeVirtualMethod(SRCB_WITH_SOURCES, runTimeBuilder, runtimeConfigSourcesArray);
@@ -593,8 +611,11 @@ public final class RunTimeConfigurationGenerator {
                     initGroup = generateInitGroup(root);
                 }
 
-                final MethodDescriptor ctor = accessorFinder
-                        .getConstructorFor(MethodDescriptor.ofConstructor(configurationClass));
+                MethodDescriptor accessorCtor = null;
+                if (!Modifier.isPublic(configurationClass.getModifiers())) {
+                    accessorCtor = accessorFinder
+                            .getConstructorFor(MethodDescriptor.ofConstructor(configurationClass));
+                }
 
                 // specific actions based on config phase
                 String rootName = root.getRootName();
@@ -603,8 +624,15 @@ public final class RunTimeConfigurationGenerator {
                     cc.getFieldCreator(rootFieldDescriptor)
                             .setModifiers(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC
                                     | (devMode ? Opcodes.ACC_VOLATILE : Opcodes.ACC_FINAL));
+
                     // construct instance in <clinit>
-                    ResultHandle instance = clinit.invokeStaticMethod(ctor);
+                    ResultHandle instance;
+                    if (accessorCtor == null) {
+                        instance = clinit.newInstance(MethodDescriptor.ofConstructor(configurationClass));
+                    } else {
+                        instance = clinit.invokeStaticMethod(accessorCtor);
+                    }
+
                     // assign instance to field
                     clinit.writeStaticField(rootFieldDescriptor, instance);
                     instanceCache.put(rootFieldDescriptor, instance);
@@ -616,10 +644,7 @@ public final class RunTimeConfigurationGenerator {
                     clinit.invokeStaticMethod(initGroup, clinitConfig, clinitNameBuilder, instance);
                     clinit.invokeVirtualMethod(SB_SET_LENGTH, clinitNameBuilder, clInitOldLen);
                     if (devMode) {
-                        //we don't regenerate this class in dev mode, but we do allow config to be reloaded
-                        instance = readConfig.invokeStaticMethod(ctor);
-                        // assign instance to field
-                        readConfig.writeStaticField(rootFieldDescriptor, instance);
+                        instance = readConfig.readStaticField(rootFieldDescriptor);
                         if (!rootName.isEmpty()) {
                             readConfig.invokeVirtualMethod(SB_APPEND_CHAR, readConfigNameBuilder, readConfig.load('.'));
                             readConfig.invokeVirtualMethod(SB_APPEND_STRING, readConfigNameBuilder,
@@ -633,8 +658,15 @@ public final class RunTimeConfigurationGenerator {
                         // config root field is volatile; we initialize and read config from the readBootstrapConfig method
                         cc.getFieldCreator(rootFieldDescriptor)
                                 .setModifiers(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_VOLATILE);
+
                         // construct instance in readBootstrapConfig
-                        final ResultHandle instance = readBootstrapConfig.invokeStaticMethod(ctor);
+                        final ResultHandle instance;
+                        if (accessorCtor == null) {
+                            instance = readBootstrapConfig.newInstance(MethodDescriptor.ofConstructor(configurationClass));
+                        } else {
+                            instance = readBootstrapConfig.invokeStaticMethod(accessorCtor);
+                        }
+
                         // assign instance to field
                         readBootstrapConfig.writeStaticField(rootFieldDescriptor, instance);
                         if (!rootName.isEmpty()) {
@@ -651,8 +683,15 @@ public final class RunTimeConfigurationGenerator {
                     // config root field is volatile; we initialize and read config from the readConfig method
                     cc.getFieldCreator(rootFieldDescriptor)
                             .setModifiers(Opcodes.ACC_PUBLIC | Opcodes.ACC_STATIC | Opcodes.ACC_VOLATILE);
+
                     // construct instance in readConfig
-                    final ResultHandle instance = readConfig.invokeStaticMethod(ctor);
+                    final ResultHandle instance;
+                    if (accessorCtor == null) {
+                        instance = readConfig.newInstance(MethodDescriptor.ofConstructor(configurationClass));
+                    } else {
+                        instance = readConfig.invokeStaticMethod(accessorCtor);
+                    }
+
                     // assign instance to field
                     readConfig.writeStaticField(rootFieldDescriptor, instance);
                     if (!rootName.isEmpty()) {
@@ -668,58 +707,14 @@ public final class RunTimeConfigurationGenerator {
                 }
             }
 
-            ResultHandle nameSet;
-            ResultHandle iterator;
-
             // generate sweep for clinit
-            nameSet = clinit.invokeVirtualMethod(SRC_GET_PROPERTY_NAMES, clinitConfig);
-            iterator = clinit.invokeInterfaceMethod(ITRA_ITERATOR, nameSet);
+            configSweepLoop(siParserBody, clinit, clinitConfig);
 
-            try (BytecodeCreator sweepLoop = clinit.createScope()) {
-                try (BytecodeCreator hasNext = sweepLoop.ifNonZero(sweepLoop.invokeInterfaceMethod(ITR_HAS_NEXT, iterator))
-                        .trueBranch()) {
-
-                    final ResultHandle key = hasNext.checkCast(hasNext.invokeInterfaceMethod(ITR_NEXT, iterator), String.class);
-                    // NameIterator keyIter = new NameIterator(key);
-                    final ResultHandle keyIter = hasNext.newInstance(NI_NEW_STRING, key);
-                    // if (! keyIter.hasNext()) continue sweepLoop;
-                    hasNext.ifNonZero(hasNext.invokeVirtualMethod(NI_HAS_NEXT, keyIter)).falseBranch().continueScope(sweepLoop);
-                    // if (! keyIter.nextSegmentEquals("quarkus")) continue sweepLoop;
-                    hasNext.ifNonZero(hasNext.invokeVirtualMethod(NI_NEXT_EQUALS, keyIter, hasNext.load("quarkus")))
-                            .falseBranch().continueScope(sweepLoop);
-                    // keyIter.next(); // skip "quarkus"
-                    hasNext.invokeVirtualMethod(NI_NEXT, keyIter);
-                    // parse(config, keyIter);
-                    hasNext.invokeStaticMethod(siParserBody, clinitConfig, keyIter);
-                    // continue sweepLoop;
-                    hasNext.continueScope(sweepLoop);
-                }
+            if (devMode) {
+                configSweepLoop(siParserBody, readConfig, runTimeConfig);
             }
-
             // generate sweep for run time
-            nameSet = readConfig.invokeVirtualMethod(SRC_GET_PROPERTY_NAMES, runTimeConfig);
-            iterator = readConfig.invokeInterfaceMethod(ITRA_ITERATOR, nameSet);
-
-            try (BytecodeCreator sweepLoop = readConfig.createScope()) {
-                try (BytecodeCreator hasNext = sweepLoop.ifNonZero(sweepLoop.invokeInterfaceMethod(ITR_HAS_NEXT, iterator))
-                        .trueBranch()) {
-
-                    final ResultHandle key = hasNext.checkCast(hasNext.invokeInterfaceMethod(ITR_NEXT, iterator), String.class);
-                    // NameIterator keyIter = new NameIterator(key);
-                    final ResultHandle keyIter = hasNext.newInstance(NI_NEW_STRING, key);
-                    // if (! keyIter.hasNext()) continue sweepLoop;
-                    hasNext.ifNonZero(hasNext.invokeVirtualMethod(NI_HAS_NEXT, keyIter)).falseBranch().continueScope(sweepLoop);
-                    // if (! keyIter.nextSegmentEquals("quarkus")) continue sweepLoop;
-                    hasNext.ifNonZero(hasNext.invokeVirtualMethod(NI_NEXT_EQUALS, keyIter, hasNext.load("quarkus")))
-                            .falseBranch().continueScope(sweepLoop);
-                    // keyIter.next(); // skip "quarkus"
-                    hasNext.invokeVirtualMethod(NI_NEXT, keyIter);
-                    // parse(config, keyIter);
-                    hasNext.invokeStaticMethod(rtParserBody, runTimeConfig, keyIter);
-                    // continue sweepLoop;
-                    hasNext.continueScope(sweepLoop);
-                }
-            }
+            configSweepLoop(rtParserBody, readConfig, runTimeConfig);
 
             // generate ensure-initialized method
             // the point of this method is simply to initialize the Config class
@@ -783,6 +778,34 @@ public final class RunTimeConfigurationGenerator {
             generateDefaultValuesConfigSourceClass(buildTimeRunTimePatternMap, BTRTDVCS_CLASS_NAME);
         }
 
+        private static void configSweepLoop(MethodDescriptor parserBody, MethodCreator method, ResultHandle config) {
+            ResultHandle nameSet;
+            ResultHandle iterator;
+            nameSet = method.invokeVirtualMethod(SRC_GET_PROPERTY_NAMES, config);
+            iterator = method.invokeInterfaceMethod(ITRA_ITERATOR, nameSet);
+
+            try (BytecodeCreator sweepLoop = method.createScope()) {
+                try (BytecodeCreator hasNext = sweepLoop.ifNonZero(sweepLoop.invokeInterfaceMethod(ITR_HAS_NEXT, iterator))
+                        .trueBranch()) {
+
+                    final ResultHandle key = hasNext.checkCast(hasNext.invokeInterfaceMethod(ITR_NEXT, iterator), String.class);
+                    // NameIterator keyIter = new NameIterator(key);
+                    final ResultHandle keyIter = hasNext.newInstance(NI_NEW_STRING, key);
+                    // if (! keyIter.hasNext()) continue sweepLoop;
+                    hasNext.ifNonZero(hasNext.invokeVirtualMethod(NI_HAS_NEXT, keyIter)).falseBranch().continueScope(sweepLoop);
+                    // if (! keyIter.nextSegmentEquals("quarkus")) continue sweepLoop;
+                    hasNext.ifNonZero(hasNext.invokeVirtualMethod(NI_NEXT_EQUALS, keyIter, hasNext.load("quarkus")))
+                            .falseBranch().continueScope(sweepLoop);
+                    // keyIter.next(); // skip "quarkus"
+                    hasNext.invokeVirtualMethod(NI_NEXT, keyIter);
+                    // parse(config, keyIter);
+                    hasNext.invokeStaticMethod(parserBody, config, keyIter);
+                    // continue sweepLoop;
+                    hasNext.continueScope(sweepLoop);
+                }
+            }
+        }
+
         private void installConfiguration(ResultHandle config, MethodCreator methodCreator) {
             // install config
             methodCreator.invokeStaticMethod(QCF_SET_CONFIG, config);
@@ -842,7 +865,10 @@ public final class RunTimeConfigurationGenerator {
             for (ClassDefinition.ClassMember member : definition.getMembers()) {
                 // common setup
                 final String propertyName = member.getPropertyName();
-                final MethodDescriptor setter = accessorFinder.getSetterFor(member.getDescriptor());
+                MethodDescriptor setter = null; // we won't need a setter if the field is public
+                if (!isFieldEligibleForDirectAccess(member)) {
+                    setter = accessorFinder.getSetterFor(member.getDescriptor());
+                }
                 if (!propertyName.isEmpty()) {
                     // append the property name
                     bc.invokeVirtualMethod(SB_APPEND_CHAR, nameBuilder, bc.load('.'));
@@ -855,7 +881,11 @@ public final class RunTimeConfigurationGenerator {
                     final ResultHandle converter = bc.readStaticField(convField);
                     try (TryBlock tryBlock = bc.tryBlock()) {
                         final ResultHandle val = tryBlock.invokeVirtualMethod(SRC_GET_VALUE, config, name, converter);
-                        tryBlock.invokeStaticMethod(setter, instance, val);
+                        if (setter == null) {
+                            tryBlock.writeInstanceField(member.getDescriptor(), instance, val);
+                        } else {
+                            tryBlock.invokeStaticMethod(setter, instance, val);
+                        }
                         try (CatchBlockCreator catchBadValue = tryBlock.addCatch(IllegalArgumentException.class)) {
                             catchBadValue.invokeStaticMethod(CD_INVALID_VALUE, name, catchBadValue.getCaughtException());
                         }
@@ -866,20 +896,41 @@ public final class RunTimeConfigurationGenerator {
                 } else if (member instanceof ClassDefinition.GroupMember) {
                     ClassDefinition.GroupMember groupMember = (ClassDefinition.GroupMember) member;
                     if (groupMember.isOptional()) {
-                        bc.invokeStaticMethod(setter, instance, bc.invokeStaticMethod(OPT_EMPTY));
+                        final ResultHandle val = bc.invokeStaticMethod(OPT_EMPTY);
+                        if (setter == null) {
+                            bc.writeInstanceField(member.getDescriptor(), instance, val);
+                        } else {
+                            bc.invokeStaticMethod(setter, instance, val);
+                        }
                     } else {
                         final GroupDefinition groupDefinition = groupMember.getGroupDefinition();
                         final MethodDescriptor nested = generateInitGroup(groupDefinition);
-                        final MethodDescriptor ctor = accessorFinder
-                                .getConstructorFor(MethodDescriptor.ofConstructor(groupDefinition.getConfigurationClass()));
-                        final ResultHandle nestedInstance = bc.invokeStaticMethod(ctor);
+
+                        final ResultHandle nestedInstance;
+                        if (Modifier.isPublic(groupDefinition.getConfigurationClass().getModifiers())) {
+                            nestedInstance = bc
+                                    .newInstance(MethodDescriptor.ofConstructor(groupDefinition.getConfigurationClass()));
+                        } else {
+                            final MethodDescriptor ctor = accessorFinder
+                                    .getConstructorFor(MethodDescriptor.ofConstructor(groupDefinition.getConfigurationClass()));
+                            nestedInstance = bc.invokeStaticMethod(ctor);
+                        }
+
                         bc.invokeStaticMethod(nested, config, nameBuilder, nestedInstance);
-                        bc.invokeStaticMethod(setter, instance, nestedInstance);
+                        if (setter == null) {
+                            bc.writeInstanceField(member.getDescriptor(), instance, nestedInstance);
+                        } else {
+                            bc.invokeStaticMethod(setter, instance, nestedInstance);
+                        }
                     }
                 } else {
                     assert member instanceof ClassDefinition.MapMember;
                     final ResultHandle map = bc.newInstance(TM_NEW);
-                    bc.invokeStaticMethod(setter, instance, map);
+                    if (setter == null) {
+                        bc.writeInstanceField(member.getDescriptor(), instance, map);
+                    } else {
+                        bc.invokeStaticMethod(setter, instance, map);
+                    }
                 }
                 if (!propertyName.isEmpty()) {
                     // restore length
@@ -996,16 +1047,65 @@ public final class RunTimeConfigurationGenerator {
             }
         }
 
+        private void generateEmptyParsers(ClassCreator cc) {
+            MethodCreator body = cc.getMethodCreator(RT_EMPTY_PARSER);
+            body.setModifiers(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC);
+            ResultHandle keyIter = body.getMethodParam(1);
+            try (BytecodeCreator matchedBody = body.ifNonZero(body.invokeVirtualMethod(NI_HAS_NEXT, keyIter))
+                    .falseBranch()) {
+                // return;
+                matchedBody.returnValue(null);
+            }
+            body.invokeStaticMethod(CD_UNKNOWN_RT, keyIter);
+            body.returnValue(null);
+
+            body = cc.getMethodCreator(EMPTY_PARSER);
+            body.setModifiers(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC);
+            keyIter = body.getMethodParam(1);
+            try (BytecodeCreator matchedBody = body.ifNonZero(body.invokeVirtualMethod(NI_HAS_NEXT, keyIter))
+                    .falseBranch()) {
+                // return;
+                matchedBody.returnValue(null);
+            }
+            body.invokeStaticMethod(CD_UNKNOWN, keyIter);
+            body.returnValue(null);
+        }
+
         private MethodDescriptor generateParserBody(final ConfigPatternMap<Container> keyMap,
                 final ConfigPatternMap<?> ignoredMap, final StringBuilder methodName, final boolean dynamic,
                 final boolean isRunTime) {
+            final Container matched = keyMap == null ? null : keyMap.getMatched();
+            final Object ignoreMatched = ignoredMap == null ? null : ignoredMap.getMatched();
+
+            if (matched == null && ignoreMatched != null) {
+                //if this method is an ignored leaf node then we can avoid generating a method
+                //this reduces the number of generated methods by close too 50%
+                if (keyMap == null || !keyMap.childNames().iterator().hasNext()) {
+                    final Iterable<String> names = ignoredMap.childNames();
+                    boolean needsCode = false;
+                    for (String name : names) {
+                        if (name.equals(ConfigPatternMap.WILD_CARD)) {
+                            needsCode = true;
+                            break;
+                        } else {
+                            final ConfigPatternMap<Container> keyChildMap = keyMap == null ? null : keyMap.getChild(name);
+                            if (keyChildMap == null) {
+                                needsCode = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!needsCode) {
+                        return isRunTime ? RT_EMPTY_PARSER : EMPTY_PARSER;
+                    }
+                }
+            }
+
             try (MethodCreator body = cc.getMethodCreator(methodName.toString(), void.class,
                     SmallRyeConfig.class, NameIterator.class)) {
                 body.setModifiers(Opcodes.ACC_PRIVATE | Opcodes.ACC_STATIC);
                 final ResultHandle config = body.getMethodParam(0);
                 final ResultHandle keyIter = body.getMethodParam(1);
-                final Container matched = keyMap == null ? null : keyMap.getMatched();
-                final Object ignoreMatched = ignoredMap == null ? null : ignoredMap.getMatched();
                 // if (! keyIter.hasNext()) {
                 try (BytecodeCreator matchedBody = body.ifNonZero(body.invokeVirtualMethod(NI_HAS_NEXT, keyIter))
                         .falseBranch()) {
@@ -1173,8 +1273,15 @@ public final class RunTimeConfigurationGenerator {
                     }
                     final ResultHandle enclosing = mc.invokeStaticMethod(generateGetEnclosing(fieldContainer, isRunTime),
                             keyIter, config);
-                    final MethodDescriptor getter = accessorFinder.getGetterFor(classMember.getDescriptor());
-                    final ResultHandle fieldVal = mc.invokeStaticMethod(getter, enclosing);
+
+                    final ResultHandle fieldVal;
+                    if (isFieldEligibleForDirectAccess(classMember)) {
+                        fieldVal = mc.readInstanceField(classMember.getDescriptor(), enclosing);
+                    } else {
+                        final MethodDescriptor getter = accessorFinder.getGetterFor(classMember.getDescriptor());
+                        fieldVal = mc.invokeStaticMethod(getter, enclosing);
+                    }
+
                     final AssignableResultHandle group = mc.createVariable(Object.class);
                     if (classMember instanceof ClassDefinition.GroupMember
                             && ((ClassDefinition.GroupMember) classMember).isOptional()) {
@@ -1183,17 +1290,30 @@ public final class RunTimeConfigurationGenerator {
                         final BytecodeCreator falseBranch = isPresent.falseBranch();
                         // it already exists
                         trueBranch.assign(group, trueBranch.invokeVirtualMethod(OPT_GET, fieldVal));
+
                         // it doesn't exist, recreate it
-                        final MethodDescriptor ctor = accessorFinder.getConstructorFor(
-                                MethodDescriptor.ofConstructor(member.getEnclosingDefinition().getConfigurationClass()));
-                        final ResultHandle instance = falseBranch.invokeStaticMethod(ctor);
+                        final ResultHandle instance;
+                        if (Modifier.isPublic(member.getEnclosingDefinition().getConfigurationClass().getModifiers())) {
+                            instance = falseBranch.newInstance(
+                                    MethodDescriptor.ofConstructor(member.getEnclosingDefinition().getConfigurationClass()));
+                        } else {
+                            final MethodDescriptor ctor = accessorFinder.getConstructorFor(
+                                    MethodDescriptor.ofConstructor(member.getEnclosingDefinition().getConfigurationClass()));
+                            instance = falseBranch.invokeStaticMethod(ctor);
+                        }
+
                         final ResultHandle precedingKey = falseBranch.invokeVirtualMethod(NI_GET_ALL_PREVIOUS_SEGMENTS,
                                 keyIter);
                         final ResultHandle nameBuilder = falseBranch.newInstance(SB_NEW_STR, precedingKey);
                         falseBranch.invokeStaticMethod(generateInitGroup(member.getEnclosingDefinition()), config, nameBuilder,
                                 instance);
-                        final MethodDescriptor setter = accessorFinder.getSetterFor(classMember.getDescriptor());
-                        falseBranch.invokeStaticMethod(setter, fieldVal, falseBranch.invokeStaticMethod(OPT_OF, instance));
+                        final ResultHandle val = falseBranch.invokeStaticMethod(OPT_OF, instance);
+                        if (isFieldEligibleForDirectAccess(member)) {
+                            falseBranch.writeInstanceField(member.getDescriptor(), instance, val);
+                        } else {
+                            final MethodDescriptor setter = accessorFinder.getSetterFor(classMember.getDescriptor());
+                            falseBranch.invokeStaticMethod(setter, fieldVal, val);
+                        }
                         falseBranch.assign(group, instance);
                     } else {
                         mc.assign(group, fieldVal);
@@ -1216,10 +1336,18 @@ public final class RunTimeConfigurationGenerator {
                     mc.invokeVirtualMethod(NI_NEXT, keyIter);
                     final ResultHandle existing = mc.invokeInterfaceMethod(MAP_GET, map, key);
                     mc.ifNull(existing).falseBranch().returnValue(existing);
+
                     // add the map key and initialize the enclosed item
-                    final MethodDescriptor ctor = accessorFinder.getConstructorFor(
-                            MethodDescriptor.ofConstructor(member.getEnclosingDefinition().getConfigurationClass()));
-                    final ResultHandle instance = mc.invokeStaticMethod(ctor);
+                    final ResultHandle instance;
+                    if (Modifier.isPublic(member.getEnclosingDefinition().getConfigurationClass().getModifiers())) {
+                        instance = mc.newInstance(
+                                MethodDescriptor.ofConstructor(member.getEnclosingDefinition().getConfigurationClass()));
+                    } else {
+                        final MethodDescriptor ctor = accessorFinder.getConstructorFor(
+                                MethodDescriptor.ofConstructor(member.getEnclosingDefinition().getConfigurationClass()));
+                        instance = mc.invokeStaticMethod(ctor);
+                    }
+
                     final ResultHandle precedingKey = mc.invokeVirtualMethod(NI_GET_ALL_PREVIOUS_SEGMENTS, keyIter);
                     final ResultHandle nameBuilder = mc.newInstance(SB_NEW_STR, precedingKey);
                     mc.invokeStaticMethod(generateInitGroup(member.getEnclosingDefinition()), config, nameBuilder, instance);
@@ -1258,9 +1386,16 @@ public final class RunTimeConfigurationGenerator {
                         // restore
                         mc.invokeVirtualMethod(NI_NEXT, keyIter);
                     }
-                    final MethodDescriptor getter = accessorFinder
-                            .getGetterFor(fieldContainer.getClassMember().getDescriptor());
-                    mc.returnValue(mc.invokeStaticMethod(getter, enclosing));
+
+                    final ResultHandle result;
+                    if (isFieldEligibleForDirectAccess(fieldContainer.getClassMember())) {
+                        result = mc.readInstanceField(fieldContainer.getClassMember().getDescriptor(), enclosing);
+                    } else {
+                        final MethodDescriptor getter = accessorFinder
+                                .getGetterFor(fieldContainer.getClassMember().getDescriptor());
+                        result = mc.invokeStaticMethod(getter, enclosing);
+                    }
+                    mc.returnValue(result);
                 } else {
                     assert parent instanceof MapContainer;
                     // the map might or might not contain this map
@@ -1423,6 +1558,7 @@ public final class RunTimeConfigurationGenerator {
             private BuildTimeConfigurationReader.ReadResult buildTimeReadResult;
             private Map<String, String> runTimeDefaults;
             private List<Class<?>> additionalTypes;
+            private List<String> additionalBootstrapConfigSourceProviders;
 
             Builder() {
             }
@@ -1472,9 +1608,26 @@ public final class RunTimeConfigurationGenerator {
                 return this;
             }
 
+            Builder setAdditionalBootstrapConfigSourceProviders(List<String> additionalBootstrapConfigSourceProviders) {
+                this.additionalBootstrapConfigSourceProviders = additionalBootstrapConfigSourceProviders;
+                return this;
+            }
+
             GenerateOperation build() {
                 return new GenerateOperation(this);
             }
         }
+    }
+
+    /**
+     * A field is eligible for direct access if the following conditions are met
+     * 1) the field is public
+     * 2) the enclosing class is public
+     * 3) the class type of the field is public
+     */
+    private static boolean isFieldEligibleForDirectAccess(ClassDefinition.ClassMember classMember) {
+        return Modifier.isPublic(classMember.getField().getModifiers())
+                && Modifier.isPublic(classMember.getEnclosingDefinition().getConfigurationClass().getModifiers())
+                && Modifier.isPublic(classMember.getField().getType().getModifiers());
     }
 }

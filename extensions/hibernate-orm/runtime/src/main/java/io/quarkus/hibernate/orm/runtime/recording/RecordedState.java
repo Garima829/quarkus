@@ -2,6 +2,7 @@ package io.quarkus.hibernate.orm.runtime.recording;
 
 import java.util.Collection;
 
+import org.hibernate.MultiTenancyStrategy;
 import org.hibernate.dialect.Dialect;
 import org.hibernate.engine.transaction.jta.platform.spi.JtaPlatform;
 import org.hibernate.integrator.spi.Integrator;
@@ -21,11 +22,13 @@ public final class RecordedState {
     private final Collection<ProvidedService> providedServices;
     private final IntegrationSettings integrationSettings;
     private final ProxyDefinitions proxyClassDefinitions;
+    private final MultiTenancyStrategy multiTenancyStrategy;
+    private final boolean jtaPresent;
 
     public RecordedState(Dialect dialect, JtaPlatform jtaPlatform, PrevalidatedQuarkusMetadata metadata,
             BuildTimeSettings settings, Collection<Integrator> integrators,
             Collection<ProvidedService> providedServices, IntegrationSettings integrationSettings,
-            ProxyDefinitions classDefinitions) {
+            ProxyDefinitions classDefinitions, MultiTenancyStrategy strategy, boolean jtaPresent) {
         this.dialect = dialect;
         this.jtaPlatform = jtaPlatform;
         this.metadata = metadata;
@@ -34,6 +37,8 @@ public final class RecordedState {
         this.providedServices = providedServices;
         this.integrationSettings = integrationSettings;
         this.proxyClassDefinitions = classDefinitions;
+        this.multiTenancyStrategy = strategy;
+        this.jtaPresent = jtaPresent;
     }
 
     public Dialect getDialect() {
@@ -64,7 +69,15 @@ public final class RecordedState {
         return jtaPlatform;
     }
 
+    public boolean isJtaPresent() {
+        return jtaPresent;
+    }
+
     public ProxyDefinitions getProxyClassDefinitions() {
         return proxyClassDefinitions;
+    }
+
+    public MultiTenancyStrategy getMultiTenancyStrategy() {
+        return multiTenancyStrategy;
     }
 }

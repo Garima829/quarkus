@@ -23,6 +23,24 @@ public interface InjectableContext extends AlterableContext {
     ContextState getState();
 
     /**
+     * Destroy all contextual instances from the given state.
+     * <p>
+     * The default implementation is not optimized and does not guarantee proper sychronization. Implementations of this
+     * interface are encouraged to provide an optimized implementation of this method.
+     * 
+     * @param state
+     */
+    default void destroy(ContextState state) {
+        for (InjectableBean<?> bean : state.getContextualInstances().keySet()) {
+            try {
+                destroy(bean);
+            } catch (Exception e) {
+                throw new IllegalStateException("Unable to destroy contextual instance of " + bean, e);
+            }
+        }
+    }
+
+    /**
      * 
      * @return {@code true} if this context represents a normal scope
      */

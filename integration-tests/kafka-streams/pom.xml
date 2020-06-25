@@ -115,9 +115,9 @@
                                     <goal>verify</goal>
                                 </goals>
                                 <configuration>
-                                    <systemProperties>
+                                    <systemPropertyVariables>
                                         <native.image.path>${project.build.directory}/${project.build.finalName}-runner</native.image.path>
-                                    </systemProperties>
+                                    </systemPropertyVariables>
                                 </configuration>
                             </execution>
                         </executions>
@@ -135,6 +135,7 @@
                                     <cleanupServer>true</cleanupServer>
                                     <enableHttpUrlHandler>true</enableHttpUrlHandler>
                                     <graalvmHome>${graalvmHome}</graalvmHome>
+                                    <enableAllSecurityServices>true</enableAllSecurityServices>
                                 </configuration>
                             </execution>
                         </executions>

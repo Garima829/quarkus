@@ -6,7 +6,6 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -14,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
@@ -21,11 +21,14 @@ import java.util.function.Predicate;
 import org.eclipse.microprofile.config.spi.ConfigProviderResolver;
 import org.jboss.logging.Logger;
 
-import io.quarkus.bootstrap.app.AdditionalDependency;
 import io.quarkus.bootstrap.app.AugmentAction;
 import io.quarkus.bootstrap.app.CuratedApplication;
 import io.quarkus.bootstrap.app.RunningQuarkusApplication;
 import io.quarkus.bootstrap.app.StartupAction;
+import io.quarkus.bootstrap.classloading.ClassPathElement;
+import io.quarkus.bootstrap.classloading.QuarkusClassLoader;
+import io.quarkus.bootstrap.logging.InitialConfigurator;
+import io.quarkus.bootstrap.runner.Timing;
 import io.quarkus.builder.BuildChainBuilder;
 import io.quarkus.builder.BuildContext;
 import io.quarkus.builder.BuildStep;
@@ -33,26 +36,25 @@ import io.quarkus.deployment.builditem.ApplicationClassPredicateBuildItem;
 import io.quarkus.dev.spi.HotReplacementSetup;
 import io.quarkus.runner.bootstrap.AugmentActionImpl;
 import io.quarkus.runtime.ApplicationLifecycleManager;
-import io.quarkus.runtime.Timing;
 import io.quarkus.runtime.configuration.QuarkusConfigFactory;
-import io.quarkus.runtime.logging.InitialConfigurator;
 import io.quarkus.runtime.logging.LoggingSetupRecorder;
 
 public class IsolatedDevModeMain implements BiConsumer<CuratedApplication, Map<String, Object>>, Closeable {
 
     private static final Logger log = Logger.getLogger(DevModeMain.class);
+    public static final String APP_ROOT = "app-root";
 
     private volatile DevModeContext context;
 
     private final List<HotReplacementSetup> hotReplacementSetups = new ArrayList<>();
     private static volatile RunningQuarkusApplication runner;
     static volatile Throwable deploymentProblem;
-    static volatile Throwable compileProblem;
     static volatile RuntimeUpdatesProcessor runtimeUpdatesProcessor;
     private static volatile CuratedApplication curatedApplication;
     private static volatile AugmentAction augmentAction;
     private static volatile boolean restarting;
     private static volatile boolean firstStartCompleted;
+    private static final CountDownLatch shutdownLatch = new CountDownLatch(1);
 
     private synchronized void firstStart() {
         ClassLoader old = Thread.currentThread().getContextClassLoader();
@@ -77,7 +79,12 @@ public class IsolatedDevModeMain implements BiConsumer<CuratedApplication, Map<S
                                 System.out.println("Press Enter to restart or Ctrl + C to quit");
                                 try {
                                     while (System.in.read() != '\n') {
+                                        //noop
                                     }
+                                    while (System.in.available() > 0) {
+                                        System.in.read();
+                                    }
+                                    System.out.println("Restarting...");
                                     runtimeUpdatesProcessor.checkForChangedClasses();
                                     restartApp(runtimeUpdatesProcessor.checkForFileChange());
                                 } catch (Exception e) {
@@ -142,14 +149,14 @@ public class IsolatedDevModeMain implements BiConsumer<CuratedApplication, Map<S
         }
     }
 
-    private RuntimeUpdatesProcessor setupRuntimeCompilation(DevModeContext context, CuratedApplication application)
+    private RuntimeUpdatesProcessor setupRuntimeCompilation(DevModeContext context, Path appRoot)
             throws Exception {
-        if (!context.getModules().isEmpty()) {
+        if (!context.getAllModules().isEmpty()) {
             ServiceLoader<CompilationProvider> serviceLoader = ServiceLoader.load(CompilationProvider.class);
             List<CompilationProvider> compilationProviders = new ArrayList<>();
             for (CompilationProvider provider : serviceLoader) {
                 compilationProviders.add(provider);
-                context.getModules().forEach(moduleInfo -> moduleInfo.addSourcePaths(provider.handledSourcePaths()));
+                context.getAllModules().forEach(moduleInfo -> moduleInfo.addSourcePaths(provider.handledSourcePaths()));
             }
             ClassLoaderCompiler compiler;
             try {
@@ -159,7 +166,8 @@ public class IsolatedDevModeMain implements BiConsumer<CuratedApplication, Map<S
                 log.error("Failed to create compiler, runtime compilation will be unavailable", e);
                 return null;
             }
-            RuntimeUpdatesProcessor processor = new RuntimeUpdatesProcessor(context, compiler, this);
+            RuntimeUpdatesProcessor processor = new RuntimeUpdatesProcessor(appRoot, context, compiler,
+                    this::restartApp, null);
 
             for (HotReplacementSetup service : ServiceLoader.load(HotReplacementSetup.class,
                     curatedApplication.getBaseRuntimeClassLoader())) {
@@ -224,6 +232,24 @@ public class IsolatedDevModeMain implements BiConsumer<CuratedApplication, Map<S
     @Override
     public void accept(CuratedApplication o, Map<String, Object> o2) {
         Timing.staticInitStarted(o.getBaseRuntimeClassLoader());
+        //https://github.com/quarkusio/quarkus/issues/9748
+        //if you have an app with all daemon threads then the app thread
+        //may be the only thread keeping the JVM alive
+        //during the restart process when this thread is stopped then
+        //the JVM will die
+        //we start this thread to keep the JVM alive until the shutdown hook is run
+        //even for command mode we still want the JVM to live until it receives
+        //a signal to make the 'press enter to restart' function to work
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    shutdownLatch.await();
+                } catch (InterruptedException ignore) {
+
+                }
+            }
+        }, "Quarkus Devmode keep alive thread").start();
         try {
             curatedApplication = o;
 
@@ -250,23 +276,19 @@ public class IsolatedDevModeMain implements BiConsumer<CuratedApplication, Map<S
                                     context.produce(new ApplicationClassPredicateBuildItem(new Predicate<String>() {
                                         @Override
                                         public boolean test(String s) {
-                                            for (AdditionalDependency i : curatedApplication.getQuarkusBootstrap()
-                                                    .getAdditionalApplicationArchives()) {
-                                                if (i.isHotReloadable()) {
-                                                    Path p = i.getArchivePath().resolve(s.replace(".", "/") + ".class");
-                                                    if (Files.exists(p)) {
-                                                        return true;
-                                                    }
-                                                }
-                                            }
-                                            return false;
+                                            QuarkusClassLoader cl = (QuarkusClassLoader) Thread.currentThread()
+                                                    .getContextClassLoader();
+                                            //if the class file is present in this (and not the parent) CL then it is an application class
+                                            List<ClassPathElement> res = cl
+                                                    .getElementsWithResource(s.replace(".", "/") + ".class", true);
+                                            return !res.isEmpty();
                                         }
                                     }));
                                 }
                             }).produces(ApplicationClassPredicateBuildItem.class).build();
                         }
                     }));
-            runtimeUpdatesProcessor = setupRuntimeCompilation(context, o);
+            runtimeUpdatesProcessor = setupRuntimeCompilation(context, (Path) o2.get(APP_ROOT));
             if (runtimeUpdatesProcessor != null) {
                 runtimeUpdatesProcessor.checkForFileChange();
                 runtimeUpdatesProcessor.checkForChangedClasses();
@@ -274,14 +296,16 @@ public class IsolatedDevModeMain implements BiConsumer<CuratedApplication, Map<S
             firstStart();
 
             //        doStart(false, Collections.emptySet());
-            if (deploymentProblem != null || compileProblem != null) {
+            if (deploymentProblem != null || runtimeUpdatesProcessor.getCompileProblem() != null) {
                 if (context.isAbortOnFailedStart()) {
-                    throw new RuntimeException(deploymentProblem == null ? compileProblem : deploymentProblem);
+                    throw new RuntimeException(
+                            deploymentProblem == null ? runtimeUpdatesProcessor.getCompileProblem() : deploymentProblem);
                 }
             }
             Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
                 @Override
                 public void run() {
+                    shutdownLatch.countDown();
                     synchronized (DevModeMain.class) {
                         if (runner != null) {
                             try {

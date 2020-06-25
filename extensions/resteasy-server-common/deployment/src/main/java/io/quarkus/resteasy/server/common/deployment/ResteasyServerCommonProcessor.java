@@ -31,7 +31,6 @@ import org.jboss.jandex.Type;
 import org.jboss.logging.Logger;
 import org.jboss.resteasy.api.validation.ResteasyConstraintViolation;
 import org.jboss.resteasy.api.validation.ViolationReport;
-import org.jboss.resteasy.core.ResteasyDeploymentImpl;
 import org.jboss.resteasy.microprofile.config.FilterConfigSource;
 import org.jboss.resteasy.microprofile.config.ServletConfigSource;
 import org.jboss.resteasy.microprofile.config.ServletContextConfigSource;
@@ -55,6 +54,7 @@ import io.quarkus.arc.processor.BuiltinScope;
 import io.quarkus.arc.processor.DotNames;
 import io.quarkus.arc.processor.Transformation;
 import io.quarkus.deployment.Capabilities;
+import io.quarkus.deployment.Capability;
 import io.quarkus.deployment.annotations.BuildProducer;
 import io.quarkus.deployment.annotations.BuildStep;
 import io.quarkus.deployment.builditem.BytecodeTransformerBuildItem;
@@ -71,6 +71,7 @@ import io.quarkus.resteasy.common.deployment.ResteasyCommonProcessor.ResteasyCom
 import io.quarkus.resteasy.common.deployment.ResteasyDotNames;
 import io.quarkus.resteasy.common.runtime.QuarkusInjectorFactory;
 import io.quarkus.resteasy.common.spi.ResteasyJaxrsProviderBuildItem;
+import io.quarkus.resteasy.server.common.runtime.QuarkusResteasyDeployment;
 import io.quarkus.resteasy.server.common.spi.AdditionalJaxRsResourceDefiningAnnotationBuildItem;
 import io.quarkus.resteasy.server.common.spi.AdditionalJaxRsResourceMethodAnnotationsBuildItem;
 import io.quarkus.resteasy.server.common.spi.AdditionalJaxRsResourceMethodParamAnnotations;
@@ -289,7 +290,7 @@ public class ResteasyServerCommonProcessor {
 
         Map<String, String> resteasyInitParameters = new HashMap<>();
 
-        ResteasyDeployment deployment = new ResteasyDeploymentImpl();
+        ResteasyDeployment deployment = new QuarkusResteasyDeployment();
         registerProviders(deployment, resteasyInitParameters, reflectiveClass, unremovableBeans,
                 jaxrsProvidersToRegisterBuildItem);
 
@@ -436,8 +437,8 @@ public class ResteasyServerCommonProcessor {
             BuildProducer<ResteasyJaxrsProviderBuildItem> jaxRsProviders,
             BuildProducer<FilterBuildItem> servletFilters,
             Capabilities capabilities) {
-        if (buildConfig.metricsEnabled && capabilities.isCapabilityPresent(Capabilities.METRICS)) {
-            if (capabilities.isCapabilityPresent(Capabilities.SERVLET)) {
+        if (buildConfig.metricsEnabled && capabilities.isPresent(Capability.METRICS)) {
+            if (capabilities.isPresent(Capability.SERVLET)) {
                 // if running with servlet, use the MetricsFilter implementation from SmallRye
                 jaxRsProviders.produce(
                         new ResteasyJaxrsProviderBuildItem("io.smallrye.metrics.jaxrs.JaxRsMetricsFilter"));
@@ -750,15 +751,18 @@ public class ResteasyServerCommonProcessor {
             if (instance.target().kind() != Kind.METHOD) {
                 continue;
             }
+
             MethodInfo method = instance.target().asMethod();
+            String source = method.declaringClass() + "[" + method + "]";
+
             reflectiveHierarchy.produce(new ReflectiveHierarchyBuildItem(method.returnType(), index,
-                    ResteasyDotNames.IGNORE_FOR_REFLECTION_PREDICATE));
+                    ResteasyDotNames.IGNORE_FOR_REFLECTION_PREDICATE, source));
 
             for (short i = 0; i < method.parameters().size(); i++) {
                 Type parameterType = method.parameters().get(i);
                 if (!hasAnnotation(method, i, ResteasyDotNames.CONTEXT)) {
                     reflectiveHierarchy.produce(new ReflectiveHierarchyBuildItem(parameterType, index,
-                            ResteasyDotNames.IGNORE_FOR_REFLECTION_PREDICATE));
+                            ResteasyDotNames.IGNORE_FOR_REFLECTION_PREDICATE, source));
                 }
             }
         }

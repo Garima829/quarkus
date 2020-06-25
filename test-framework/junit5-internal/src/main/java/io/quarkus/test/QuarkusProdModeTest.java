@@ -108,6 +108,7 @@ public class QuarkusProdModeTest
     private String startupConsoleOutput;
     private int exitCode;
     private Consumer<Throwable> assertBuildException;
+    private String[] commandLineParameters = new String[0];
 
     public QuarkusProdModeTest() {
         InputStream appPropsIs = Thread.currentThread().getContextClassLoader().getResourceAsStream("application.properties");
@@ -309,6 +310,7 @@ public class QuarkusProdModeTest
         ExtensionContext.Store store = extensionContext.getRoot().getStore(ExtensionContext.Namespace.GLOBAL);
         if (store.get(TestResourceManager.class.getName()) == null) {
             TestResourceManager manager = new TestResourceManager(extensionContext.getRequiredTestClass());
+            manager.init();
             manager.start();
             store.put(TestResourceManager.class.getName(), new ExtensionContext.Store.CloseableResource() {
 
@@ -376,6 +378,8 @@ public class QuarkusProdModeTest
                 } else {
                     throw e;
                 }
+            } finally {
+                curatedApplication.close();
             }
 
             Path builtResultArtifact = setupProdModeResults(testClass, buildDir, result);
@@ -452,6 +456,8 @@ public class QuarkusProdModeTest
             command.add(builtResultArtifact.toAbsolutePath().toString());
             command.addAll(systemProperties);
         }
+
+        command.addAll(Arrays.asList(commandLineParameters));
 
         process = new ProcessBuilder(command)
                 .redirectErrorStream(true)
@@ -592,6 +598,11 @@ public class QuarkusProdModeTest
             customApplicationProperties = new Properties();
         }
         customApplicationProperties.put(propertyKey, propertyValue);
+        return this;
+    }
+
+    public QuarkusProdModeTest setCommandLineParameters(String... commandLineParameters) {
+        this.commandLineParameters = commandLineParameters;
         return this;
     }
 

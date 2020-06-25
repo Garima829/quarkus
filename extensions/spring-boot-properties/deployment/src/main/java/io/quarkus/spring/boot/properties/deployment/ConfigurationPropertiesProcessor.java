@@ -7,6 +7,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import io.quarkus.arc.config.ConfigProperties;
 import io.quarkus.arc.deployment.configproperties.ConfigPropertiesMetadataBuildItem;
+import io.quarkus.deployment.Feature;
 import io.quarkus.deployment.annotations.BuildProducer;
 import io.quarkus.deployment.annotations.BuildStep;
 import io.quarkus.deployment.builditem.CombinedIndexBuildItem;
@@ -19,7 +20,7 @@ public class ConfigurationPropertiesProcessor {
 
     @BuildStep
     public FeatureBuildItem registerFeature() {
-        return new FeatureBuildItem(FeatureBuildItem.SPRING_BOOT_PROPERTIES);
+        return new FeatureBuildItem(Feature.SPRING_BOOT_PROPERTIES);
     }
 
     @BuildStep
@@ -45,13 +46,13 @@ public class ConfigurationPropertiesProcessor {
 
     private ConfigPropertiesMetadataBuildItem createConfigPropertiesMetadataFromClass(AnnotationInstance annotation) {
         return new ConfigPropertiesMetadataBuildItem(annotation.target().asClass(), getPrefix(annotation),
-                ConfigProperties.NamingStrategy.VERBATIM);
+                ConfigProperties.NamingStrategy.VERBATIM, true, false);
     }
 
     private ConfigPropertiesMetadataBuildItem createConfigPropertiesMetadataFromMethod(AnnotationInstance annotation,
             IndexView index) {
         return new ConfigPropertiesMetadataBuildItem(index.getClassByName(annotation.target().asMethod().returnType().name()),
-                getPrefix(annotation), ConfigProperties.NamingStrategy.VERBATIM);
+                getPrefix(annotation), ConfigProperties.NamingStrategy.VERBATIM, true, false);
     }
 
     private String getPrefix(AnnotationInstance annotation) {

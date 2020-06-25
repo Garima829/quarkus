@@ -17,7 +17,7 @@
     <properties>
         <!-- Maven plugin versions -->
         <elasticsearch-maven-plugin.version>6.15</elasticsearch-maven-plugin.version>
-        <elasticsearch-server.version>7.6.1</elasticsearch-server.version>
+        <elasticsearch-server.version>7.7.0</elasticsearch-server.version>
         <scala-maven-plugin.version>4.1.1</scala-maven-plugin.version>
 
         <!-- These properties are needed in order for them to be resolvable by the generated projects -->
@@ -28,15 +28,16 @@
         <scala-plugin.version>4.1.1</scala-plugin.version>
 
         <version.surefire.plugin>2.22.1</version.surefire.plugin>
+        <failsafe-plugin.version>${version.surefire.plugin}</failsafe-plugin.version>
 
         <!-- These properties are needed in order for them to be resolvable by the documentation -->
         <!-- The Graal version we suggest using in documentation - as that's
            what we work with by self downloading it: -->
-        <graal-sdk.version-for-documentation>19.3.1</graal-sdk.version-for-documentation>
+        <graal-sdk.version-for-documentation>20.1.0</graal-sdk.version-for-documentation>
         <rest-assured.version>4.1.1</rest-assured.version>
-        <axle-client.version>0.0.15</axle-client.version>
-        <mutiny-client.version>0.0.15</mutiny-client.version>
-        <vertx.version>3.9.0</vertx.version>
+        <axle-client.version>0.0.16</axle-client.version>
+        <mutiny-client.version>0.0.16</mutiny-client.version>
+        <vertx.version>3.9.1</vertx.version>
 
         <!-- Dev tools -->
         <freemarker.version>2.3.30</freemarker.version>
@@ -55,19 +56,20 @@
         <!-- These 2 properties are used by CreateProjectMojo to add the Maven Wrapper -->
         <proposed-maven-version>3.6.3</proposed-maven-version>
         <maven-wrapper.version>0.7.7</maven-wrapper.version>
-        <gradle-wrapper.version>6.3</gradle-wrapper.version>
+        <gradle-wrapper.version>6.5</gradle-wrapper.version>
 
         <!-- MicroProfile TCK versions -->
         <microprofile-health-api.version>2.2</microprofile-health-api.version>
         <microprofile-config-api.version>1.4</microprofile-config-api.version>
-        <microprofile-metrics-api.version>2.3</microprofile-metrics-api.version>
-        <microprofile-fault-tolerance-api.version>2.1</microprofile-fault-tolerance-api.version>
+        <microprofile-metrics-api.version>2.3.2</microprofile-metrics-api.version>
+        <microprofile-fault-tolerance-api.version>2.1.1</microprofile-fault-tolerance-api.version>
         <microprofile-reactive-messaging-api.version>1.0</microprofile-reactive-messaging-api.version>
         <microprofile-rest-client-api.version>1.4.1</microprofile-rest-client-api.version>
         <microprofile-open-api.version>1.1.2</microprofile-open-api.version>
         <microprofile-opentracing-api.version>1.3.3</microprofile-opentracing-api.version>
         <microprofile-context-propagation.version>1.0.1</microprofile-context-propagation.version>
         <microprofile-jwt-api.version>1.1.1</microprofile-jwt-api.version>
+        <microprofile-graphql-api.version>1.0.2</microprofile-graphql-api.version>
 
         <!-- Antlr is used by the PanacheQL parser-->
         <antlr.version>4.7.2</antlr.version>
@@ -79,19 +81,23 @@
 
         <!-- The image to use for tests that run Keycloak -->
         <!-- IMPORTANT: If this is changed you must also update .github/workflows/ci-actions.yml to match the version -->
-        <keycloak.docker.image>quay.io/keycloak/keycloak:10.0.0</keycloak.docker.image>
+        <keycloak.docker.image>quay.io/keycloak/keycloak:10.0.2</keycloak.docker.image>
 
         <unboundid-ldap.version>4.0.13</unboundid-ldap.version>
 
         <wiremock-jre8.version>2.26.3</wiremock-jre8.version>
         <wiremock-maven-plugin.version>6.0.0</wiremock-maven-plugin.version>
 
-        <test-containers.version>1.14.1</test-containers.version>
-        <jna.version>5.3.1</jna.version>
-
         <!-- Code Coverage Properties-->
         <jacoco.agent.argLine></jacoco.agent.argLine>
         <jacoco.version>0.8.5</jacoco.version>
+
+        <!-- grpc -->
+        <os-maven-plugin.version>1.6.2</os-maven-plugin.version>
+        <protobuf-maven-plugin.version>0.6.1</protobuf-maven-plugin.version>
+        <protoc.version>3.11.4</protoc.version>
+        <grpc.version>1.29.0</grpc.version>
+        <maven-dependency-plugin.version>3.1.2</maven-dependency-plugin.version>
     </properties>
 
     <dependencyManagement>
@@ -108,6 +114,11 @@
 
             <!-- Dev tools -->
 
+            <dependency>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-devmode-test-utils</artifactId>
+                <version>${project.version}</version>
+            </dependency>
             <dependency>
                 <groupId>io.quarkus</groupId>
                 <artifactId>quarkus-devtools-utilities</artifactId>
@@ -198,23 +209,34 @@
                 </exclusions>
             </dependency>
 
-            <!-- JNA dependency is fixed due to transitive dependency issue on testcontainers-->
             <dependency>
-                <groupId>net.java.dev.jna</groupId>
-                <artifactId>jna</artifactId>
-                <version>${jna.version}</version>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-bootstrap-core</artifactId>
+                <version>${project.version}</version>
+                <type>test-jar</type>
+                <scope>test</scope>
             </dependency>
             <dependency>
-                <groupId>org.testcontainers</groupId>
-                <artifactId>testcontainers</artifactId>
-                <version>${test-containers.version}</version>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-integration-test-class-transformer</artifactId>
+                <version>${project.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.testcontainers</groupId>
-                <artifactId>postgresql</artifactId>
-                <version>${test-containers.version}</version>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-integration-test-shared-library</artifactId>
+                <version>${project.version}</version>
             </dependency>
-
+            <dependency>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-test-maven</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.quarkus</groupId>
+                <artifactId>quarkus-security-test-utils</artifactId>
+                <version>${project.version}</version>
+                <scope>test</scope>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
@@ -223,12 +245,29 @@
             <plugins>
                 <plugin>
                     <artifactId>maven-surefire-plugin</artifactId>
+                    <version>${version.surefire.plugin}</version>
                     <configuration>
-                        <systemProperties>
+                        <systemPropertyVariables>
                             <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
-                        </systemProperties>
+                            <maven.home>${maven.home}</maven.home>
+                        </systemPropertyVariables>
                         <argLine>${jacoco.agent.argLine}</argLine>
                     </configuration>
+                </plugin>
+                <plugin>
+                    <artifactId>maven-failsafe-plugin</artifactId>
+                    <version>${failsafe-plugin.version}</version>
+                    <configuration>
+                        <systemPropertyVariables>
+                            <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
+                            <maven.home>${maven.home}</maven.home>
+                        </systemPropertyVariables>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-dependency-plugin</artifactId>
+                    <version>${maven-dependency-plugin.version}</version>
                 </plugin>
                 <plugin>
                     <groupId>io.quarkus</groupId>
@@ -345,7 +384,6 @@
                                             <exclude>org.springframework.boot:spring-boot</exclude>
                                             <!-- Ban checker-qual, we don't use Checker Framework -->
                                             <exclude>org.checkerframework:checker-qual</exclude>
-                                            <exclude>com.google.code.findbugs:jsr305</exclude>
                                             <!-- We use our own impl here, including this one causes problems-->
                                             <exclude>org.jboss.resteasy:resteasy-context-propagation</exclude>
                                         </excludes>
@@ -393,6 +431,7 @@
                       </dependencies>
                     <configuration>
                         <configFile>eclipse-format.xml</configFile>
+                        <lineEnding>LF</lineEnding>
                         <skip>${format.skip}</skip>
                     </configuration>
                 </plugin>
@@ -442,6 +481,16 @@
                             <version>${wiremock-jre8.version}</version>
                         </dependency>
                     </dependencies>
+                </plugin>
+                <plugin>
+                    <groupId>kr.motd.maven</groupId>
+                    <artifactId>os-maven-plugin</artifactId>
+                    <version>${os-maven-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.xolstice.maven.plugins</groupId>
+                    <artifactId>protobuf-maven-plugin</artifactId>
+                    <version>${protobuf-maven-plugin.version}</version>
                 </plugin>
             </plugins>
         </pluginManagement>

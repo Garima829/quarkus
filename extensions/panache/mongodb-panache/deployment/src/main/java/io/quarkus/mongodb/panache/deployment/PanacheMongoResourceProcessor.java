@@ -1,5 +1,6 @@
 package io.quarkus.mongodb.panache.deployment;
 
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -14,25 +15,26 @@ import org.bson.codecs.pojo.annotations.BsonProperty;
 import org.bson.types.ObjectId;
 import org.jboss.jandex.AnnotationInstance;
 import org.jboss.jandex.ClassInfo;
-import org.jboss.jandex.CompositeIndex;
 import org.jboss.jandex.DotName;
 import org.jboss.jandex.FieldInfo;
-import org.jboss.jandex.Indexer;
 import org.jboss.jandex.MethodInfo;
 import org.jboss.jandex.Type;
 
-import io.quarkus.arc.deployment.BeanArchiveIndexBuildItem;
+import com.mongodb.client.MongoClient;
+
 import io.quarkus.arc.deployment.UnremovableBeanBuildItem;
 import io.quarkus.arc.deployment.ValidationPhaseBuildItem;
 import io.quarkus.bootstrap.classloading.ClassPathElement;
 import io.quarkus.bootstrap.classloading.QuarkusClassLoader;
 import io.quarkus.builder.BuildException;
-import io.quarkus.deployment.Capabilities;
+import io.quarkus.deployment.Capability;
+import io.quarkus.deployment.Feature;
 import io.quarkus.deployment.annotations.BuildProducer;
 import io.quarkus.deployment.annotations.BuildStep;
 import io.quarkus.deployment.annotations.ExecutionTime;
 import io.quarkus.deployment.annotations.Record;
 import io.quarkus.deployment.bean.JavaBeanUtil;
+import io.quarkus.deployment.builditem.AdditionalIndexedClassesBuildItem;
 import io.quarkus.deployment.builditem.ApplicationIndexBuildItem;
 import io.quarkus.deployment.builditem.BytecodeTransformerBuildItem;
 import io.quarkus.deployment.builditem.CapabilityBuildItem;
@@ -40,7 +42,6 @@ import io.quarkus.deployment.builditem.CombinedIndexBuildItem;
 import io.quarkus.deployment.builditem.FeatureBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.ReflectiveClassBuildItem;
 import io.quarkus.deployment.builditem.nativeimage.ReflectiveHierarchyBuildItem;
-import io.quarkus.deployment.index.IndexingUtil;
 import io.quarkus.deployment.util.JandexUtil;
 import io.quarkus.jackson.spi.JacksonModuleBuildItem;
 import io.quarkus.jsonb.spi.JsonbDeserializerBuildItem;
@@ -55,6 +56,7 @@ import io.quarkus.mongodb.panache.reactive.ReactivePanacheMongoEntity;
 import io.quarkus.mongodb.panache.reactive.ReactivePanacheMongoEntityBase;
 import io.quarkus.mongodb.panache.reactive.ReactivePanacheMongoRepository;
 import io.quarkus.mongodb.panache.reactive.ReactivePanacheMongoRepositoryBase;
+import io.quarkus.mongodb.reactive.ReactiveMongoClient;
 import io.quarkus.panache.common.deployment.PanacheEntityClassesBuildItem;
 import io.quarkus.panache.common.deployment.PanacheFieldAccessEnhancer;
 import io.quarkus.panache.common.deployment.PanacheMethodCustomizer;
@@ -87,12 +89,18 @@ public class PanacheMongoResourceProcessor {
 
     @BuildStep
     CapabilityBuildItem capability() {
-        return new CapabilityBuildItem(Capabilities.MONGODB_PANACHE);
+        return new CapabilityBuildItem(Capability.MONGODB_PANACHE);
     }
 
     @BuildStep
     FeatureBuildItem featureBuildItem() {
-        return new FeatureBuildItem(FeatureBuildItem.MONGODB_PANACHE);
+        return new FeatureBuildItem(Feature.MONGODB_PANACHE);
+    }
+
+    @BuildStep
+    void contributeClassesToIndex(BuildProducer<AdditionalIndexedClassesBuildItem> additionalIndexedClasses) {
+        additionalIndexedClasses.produce(new AdditionalIndexedClassesBuildItem(
+                DOTNAME_OBJECT_ID.toString()));
     }
 
     @BuildStep
@@ -116,23 +124,40 @@ public class PanacheMongoResourceProcessor {
 
     @BuildStep
     ReflectiveHierarchyBuildItem registerForReflection(CombinedIndexBuildItem index) {
-        Indexer indexer = new Indexer();
-        Set<DotName> additionalIndex = new HashSet<>();
-        IndexingUtil.indexClass(ObjectId.class.getName(), indexer, index.getIndex(), additionalIndex,
-                PanacheMongoResourceProcessor.class.getClassLoader());
-        CompositeIndex compositeIndex = CompositeIndex.create(index.getIndex(), indexer.complete());
         Type type = Type.create(DOTNAME_OBJECT_ID, Type.Kind.CLASS);
-        return new ReflectiveHierarchyBuildItem(type, compositeIndex);
+        return new ReflectiveHierarchyBuildItem(type, index.getIndex());
     }
 
     @BuildStep
-    void unremovableProducers(BuildProducer<UnremovableBeanBuildItem> unremovable,
-            BeanArchiveIndexBuildItem beanArchiveIndex) {
+    void unremoveableClients(BuildProducer<UnremovableBeanBuildItem> unremovable) {
         unremovable.produce(
                 new UnremovableBeanBuildItem(
-                        new UnremovableBeanBuildItem.BeanClassNameExclusion(
-                                "io.quarkus.mongodb.runtime.MongoClientProducer")));
+                        new UnremovableBeanBuildItem.BeanClassNamesExclusion(new HashSet<>(
+                                Arrays.asList(MongoClient.class.getName(), ReactiveMongoClient.class.getName())))));
 
+    }
+
+    @BuildStep
+    void collectEntityClasses(CombinedIndexBuildItem index, BuildProducer<PanacheMongoEntityClassBuildItem> entityClasses) {
+        // NOTE: we don't skip abstract/generic entities because they still need accessors
+        for (ClassInfo panacheEntityBaseSubclass : index.getIndex().getAllKnownSubclasses(DOTNAME_PANACHE_ENTITY_BASE)) {
+            // FIXME: should we really skip PanacheEntity or all MappedSuperClass?
+            if (!panacheEntityBaseSubclass.name().equals(DOTNAME_PANACHE_ENTITY)) {
+                entityClasses.produce(new PanacheMongoEntityClassBuildItem(panacheEntityBaseSubclass));
+            }
+        }
+    }
+
+    @BuildStep
+    PanacheEntityClassesBuildItem findEntityClasses(List<PanacheMongoEntityClassBuildItem> entityClasses) {
+        if (!entityClasses.isEmpty()) {
+            Set<String> ret = new HashSet<>();
+            for (PanacheMongoEntityClassBuildItem entityClass : entityClasses) {
+                ret.add(entityClass.get().name().toString());
+            }
+            return new PanacheEntityClassesBuildItem(ret);
+        }
+        return null;
     }
 
     @BuildStep
@@ -141,7 +166,7 @@ public class PanacheMongoResourceProcessor {
             BuildProducer<BytecodeTransformerBuildItem> transformers,
             BuildProducer<ReflectiveClassBuildItem> reflectiveClass,
             BuildProducer<PropertyMappingClassBuildStep> propertyMappingClass,
-            BuildProducer<PanacheEntityClassesBuildItem> entityClasses,
+            List<PanacheMongoEntityClassBuildItem> entityClasses,
             List<PanacheMethodCustomizerBuildItem> methodCustomizersBuildItems) {
 
         List<PanacheMethodCustomizer> methodCustomizers = methodCustomizersBuildItems.stream()
@@ -181,34 +206,18 @@ public class PanacheMongoResourceProcessor {
 
         PanacheMongoEntityEnhancer modelEnhancer = new PanacheMongoEntityEnhancer(index.getIndex(), methodCustomizers);
         Set<String> modelClasses = new HashSet<>();
-        // Note that we do this in two passes because for some reason Jandex does not give us subtypes
-        // of PanacheMongoEntity if we ask for subtypes of PanacheMongoEntityBase
-        for (ClassInfo classInfo : index.getIndex().getAllKnownSubclasses(DOTNAME_PANACHE_ENTITY_BASE)) {
-            if (classInfo.name().equals(DOTNAME_PANACHE_ENTITY)) {
-                continue;
-            }
-            if (modelClasses.add(classInfo.name().toString()))
-                modelEnhancer.collectFields(classInfo);
-        }
-        for (ClassInfo classInfo : index.getIndex().getAllKnownSubclasses(DOTNAME_PANACHE_ENTITY)) {
-            if (modelClasses.add(classInfo.name().toString()))
-                modelEnhancer.collectFields(classInfo);
-        }
-
         Set<String> modelClassNamesInternal = new HashSet<>();
-        // iterate over all the entity classes
-        for (String modelClass : modelClasses) {
-            modelClassNamesInternal.add(modelClass.replace(".", "/"));
-            transformers.produce(new BytecodeTransformerBuildItem(modelClass, modelEnhancer));
 
+        for (PanacheMongoEntityClassBuildItem entityClass : entityClasses) {
+            String entityClassName = entityClass.get().name().toString();
+            modelClasses.add(entityClassName);
+            modelEnhancer.collectFields(entityClass.get());
+            modelClassNamesInternal.add(entityClassName.replace(".", "/"));
+            transformers.produce(new BytecodeTransformerBuildItem(entityClassName, modelEnhancer));
             //register for reflection entity classes
-            reflectiveClass.produce(new ReflectiveClassBuildItem(true, true, modelClass));
-
+            reflectiveClass.produce(new ReflectiveClassBuildItem(true, true, entityClassName));
             // Register for building the property mapping cache
-            propertyMappingClass.produce(new PropertyMappingClassBuildStep(modelClass));
-        }
-        if (!modelClasses.isEmpty()) {
-            entityClasses.produce(new PanacheEntityClassesBuildItem(modelClasses));
+            propertyMappingClass.produce(new PropertyMappingClassBuildStep(entityClassName));
         }
 
         if (!modelEnhancer.entities.isEmpty()) {
@@ -318,15 +327,15 @@ public class PanacheMongoResourceProcessor {
             CombinedIndexBuildItem index) throws BuildException {
         // we verify that no ID fields are defined (via @BsonId) when extending PanacheMongoEntity or ReactivePanacheMongoEntity
         for (AnnotationInstance annotationInstance : index.getIndex().getAnnotations(DOTNAME_BSON_ID)) {
-            ClassInfo info = io.quarkus.panache.common.deployment.JandexUtil.getEnclosingClass(annotationInstance);
-            if (io.quarkus.panache.common.deployment.JandexUtil.isSubclassOf(index.getIndex(), info,
+            ClassInfo info = JandexUtil.getEnclosingClass(annotationInstance);
+            if (JandexUtil.isSubclassOf(index.getIndex(), info,
                     DOTNAME_PANACHE_ENTITY)) {
                 BuildException be = new BuildException("You provide a MongoDB identifier via @BsonId inside '" + info.name() +
                         "' but one is already provided by PanacheMongoEntity, " +
                         "your class should extend PanacheMongoEntityBase instead, or use the id provided by PanacheMongoEntity",
                         Collections.emptyList());
                 return new ValidationPhaseBuildItem.ValidationErrorBuildItem(be);
-            } else if (io.quarkus.panache.common.deployment.JandexUtil.isSubclassOf(index.getIndex(), info,
+            } else if (JandexUtil.isSubclassOf(index.getIndex(), info,
                     DOTNAME_MUTINY_PANACHE_ENTITY)) {
                 BuildException be = new BuildException("You provide a MongoDB identifier via @BsonId inside '" + info.name() +
                         "' but one is already provided by ReactivePanacheMongoEntity, " +
@@ -382,7 +391,7 @@ public class PanacheMongoResourceProcessor {
         }
 
         // climb up the hierarchy of types
-        if (!target.superClassType().name().equals(io.quarkus.panache.common.deployment.JandexUtil.DOTNAME_OBJECT)) {
+        if (!target.superClassType().name().equals(JandexUtil.DOTNAME_OBJECT)) {
             Type superType = target.superClassType();
             ClassInfo superClass = index.getIndex().getClassByName(superType.name());
             extractMappings(classPropertyMapping, superClass, index);
