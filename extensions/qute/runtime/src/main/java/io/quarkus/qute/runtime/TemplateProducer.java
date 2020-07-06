@@ -19,7 +19,6 @@ import javax.enterprise.inject.spi.InjectionPoint;
 import javax.inject.Singleton;
 
 import org.jboss.logging.Logger;
-import org.reactivestreams.Publisher;
 
 import io.quarkus.qute.Engine;
 import io.quarkus.qute.Expression;
@@ -29,6 +28,7 @@ import io.quarkus.qute.TemplateInstanceBase;
 import io.quarkus.qute.Variant;
 import io.quarkus.qute.api.ResourcePath;
 import io.quarkus.qute.runtime.QuteRecorder.QuteContext;
+import io.smallrye.mutiny.Multi;
 
 @Singleton
 public class TemplateProducer {
@@ -145,22 +145,33 @@ public class TemplateProducer {
 
         @Override
         public String render() {
-            return template().instance().data(data()).render();
+            return templateInstance().render();
         }
 
         @Override
         public CompletionStage<String> renderAsync() {
-            return template().instance().data(data()).renderAsync();
+            return templateInstance().renderAsync();
         }
 
         @Override
-        public Publisher<String> publisher() {
-            return template().instance().data(data()).publisher();
+        public Multi<String> createMulti() {
+            return templateInstance().createMulti();
         }
 
         @Override
         public CompletionStage<Void> consume(Consumer<String> consumer) {
-            return template().instance().data(data()).consume(consumer);
+            return templateInstance().consume(consumer);
+        }
+
+        private TemplateInstance templateInstance() {
+            TemplateInstance instance = template().instance();
+            instance.data(data());
+            if (!attributes.isEmpty()) {
+                for (Entry<String, Object> entry : attributes.entrySet()) {
+                    instance.setAttribute(entry.getKey(), entry.getValue());
+                }
+            }
+            return instance;
         }
 
         private Template template() {

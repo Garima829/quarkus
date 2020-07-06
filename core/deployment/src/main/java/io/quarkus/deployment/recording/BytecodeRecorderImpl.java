@@ -77,7 +77,7 @@ import io.quarkus.runtime.StartupTask;
  * <p>
  * - primitives
  * - String
- * - Class (see {@link #classProxy(String)} to handle classes that are not loadable at generation time)
+ * - Class
  * - Objects with a no-arg constructor and getter/setters for all properties
  * - Any arbitrary object via the {@link #registerSubstitution(Class, Class, Class)} mechanism
  * - arrays, lists and maps of the above
@@ -110,6 +110,9 @@ public class BytecodeRecorderImpl implements RecorderContext {
     private final Map<Class<?>, NonDefaultConstructorHolder> nonDefaultConstructors = new HashMap<>();
     private final String className;
 
+    private final String buildStepName;
+    private final String methodName;
+
     private final List<ObjectLoader> loaders = new ArrayList<>();
 
     /**
@@ -124,15 +127,23 @@ public class BytecodeRecorderImpl implements RecorderContext {
     private int deferredParameterCount = 0;
     private boolean loadComplete;
 
-    public BytecodeRecorderImpl(ClassLoader classLoader, boolean staticInit, String className) {
+    public BytecodeRecorderImpl(boolean staticInit, String buildStepName, String methodName, String uniqueHash) {
+        this(Thread.currentThread().getContextClassLoader(), staticInit,
+                BASE_PACKAGE + buildStepName + "$" + methodName + uniqueHash, buildStepName, methodName);
+    }
+
+    // visible for testing
+    BytecodeRecorderImpl(ClassLoader classLoader, boolean staticInit, String className) {
+        this(classLoader, staticInit, className, null, null);
+    }
+
+    private BytecodeRecorderImpl(ClassLoader classLoader, boolean staticInit, String className, String buildStepName,
+            String methodName) {
         this.classLoader = classLoader;
         this.staticInit = staticInit;
         this.className = className;
-    }
-
-    public BytecodeRecorderImpl(boolean staticInit, String buildStepName, String methodName, String uniqueHash) {
-        this(Thread.currentThread().getContextClassLoader(), staticInit,
-                BASE_PACKAGE + buildStepName + "$" + methodName + uniqueHash);
+        this.buildStepName = buildStepName;
+        this.methodName = methodName;
     }
 
     public boolean isEmpty() {
@@ -342,6 +353,11 @@ public class BytecodeRecorderImpl implements RecorderContext {
                 .className(className)
                 .superClass(Object.class).interfaces(StartupTask.class).build();
         MethodCreator mainMethod = file.getMethodCreator("deploy", void.class, StartupContext.class);
+
+        // record the build step name
+        mainMethod.invokeVirtualMethod(ofMethod(StartupContext.class, "setCurrentBuildStepName", void.class, String.class),
+                mainMethod.getMethodParam(0), mainMethod.load(buildStepName + "." + methodName));
+
         //now create instances of all the classes we invoke on and store them in variables as well
         Map<Class, DeferredArrayStoreParameter> classInstanceVariables = new HashMap<>();
 

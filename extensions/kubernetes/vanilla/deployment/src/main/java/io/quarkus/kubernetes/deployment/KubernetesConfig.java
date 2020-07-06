@@ -3,6 +3,7 @@ package io.quarkus.kubernetes.deployment;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 
 import io.dekorate.kubernetes.annotation.ImagePullPolicy;
 import io.dekorate.kubernetes.annotation.ServiceType;
@@ -105,7 +106,7 @@ public class KubernetesConfig implements PlatformConfiguration {
      * The nodePort to set when serviceType is set to node-port.
      */
     @ConfigItem
-    Optional<Integer> nodePort;
+    OptionalInt nodePort;
 
     /**
      * Image pull policy
@@ -189,7 +190,7 @@ public class KubernetesConfig implements PlatformConfiguration {
      * Sidecar containers
      */
     @ConfigItem
-    Map<String, ContainerConfig> containers;
+    Map<String, ContainerConfig> sidecars;
 
     /**
      * The target deployment platform.
@@ -354,8 +355,8 @@ public class KubernetesConfig implements PlatformConfiguration {
         return initContainers;
     }
 
-    public Map<String, ContainerConfig> getContainers() {
-        return containers;
+    public Map<String, ContainerConfig> getSidecars() {
+        return sidecars;
     }
 
     @Override

@@ -17,6 +17,7 @@
 
     <properties>
         <maven.deploy.skip>true</maven.deploy.skip>
+        <gpg.skip>true</gpg.skip>
         <quarkus.build.skip>${skipTests}</quarkus.build.skip>
     </properties>
 
@@ -27,12 +28,12 @@
         <module>hibernate-validator</module>
         <module>common-jpa-entities</module>
         <module>infinispan-client</module>
-        <module>infinispan-embedded</module>
         <module>gradle</module>
         <module>main</module>
         <module>kafka</module>
         <module>kafka-streams</module>
         <module>jpa</module>
+        <module>jpa-db2</module>
         <module>jpa-derby</module>
         <module>jpa-postgresql</module>
         <module>vault</module>
@@ -106,6 +107,7 @@
         <module>smallrye-graphql</module>
         <module>jpa-without-entity</module>
         <module>quartz</module>
+        <module>redis-client</module>
         <module>logging-gelf</module>
         <module>cache</module>
         <module>qute</module>

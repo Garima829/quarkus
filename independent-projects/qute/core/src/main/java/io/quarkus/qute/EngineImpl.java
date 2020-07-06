@@ -10,17 +10,13 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.ServiceLoader;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Function;
 import java.util.function.Predicate;
-import java.util.stream.Collectors;
-import java.util.stream.StreamSupport;
 import org.jboss.logging.Logger;
 
 /**
@@ -38,41 +34,27 @@ class EngineImpl implements Engine {
     private final Map<String, Template> templates;
     private final List<TemplateLocator> locators;
     private final List<ResultMapper> resultMappers;
-    private final PublisherFactory publisherFactory;
     private final AtomicLong idGenerator = new AtomicLong(0);
     private final List<ParserHook> parserHooks;
+    final boolean removeStandaloneLines;
 
-    EngineImpl(Map<String, SectionHelperFactory<?>> sectionHelperFactories, List<ValueResolver> valueResolvers,
-            List<NamespaceResolver> namespaceResolvers, List<TemplateLocator> locators,
-            List<ResultMapper> resultMappers, Function<String, SectionHelperFactory<?>> sectionHelperFunc,
-            List<ParserHook> parserHooks) {
-        this.sectionHelperFactories = Collections.unmodifiableMap(new HashMap<>(sectionHelperFactories));
-        this.valueResolvers = sort(valueResolvers);
-        this.namespaceResolvers = ImmutableList.copyOf(namespaceResolvers);
+    EngineImpl(EngineBuilder builder) {
+        this.sectionHelperFactories = Collections.unmodifiableMap(new HashMap<>(builder.sectionHelperFactories));
+        this.valueResolvers = sort(builder.valueResolvers);
+        this.namespaceResolvers = ImmutableList.copyOf(builder.namespaceResolvers);
         this.evaluator = new EvaluatorImpl(this.valueResolvers);
         this.templates = new ConcurrentHashMap<>();
-        this.locators = sort(locators);
-        ServiceLoader<PublisherFactory> loader = ServiceLoader.load(PublisherFactory.class);
-        Iterator<PublisherFactory> iterator = loader.iterator();
-        if (iterator.hasNext()) {
-            this.publisherFactory = iterator.next();
-        } else {
-            this.publisherFactory = null;
-        }
-        if (iterator.hasNext()) {
-            throw new IllegalStateException(
-                    "Multiple reactive factories found: " + StreamSupport.stream(loader.spliterator(), false)
-                            .map(Object::getClass).map(Class::getName).collect(Collectors.joining(",")));
-        }
-        this.resultMappers = sort(resultMappers);
-        this.sectionHelperFunc = sectionHelperFunc;
-        this.parserHooks = parserHooks;
+        this.locators = sort(builder.locators);
+        this.resultMappers = sort(builder.resultMappers);
+        this.sectionHelperFunc = builder.sectionHelperFunc;
+        this.parserHooks = ImmutableList.copyOf(builder.parserHooks);
+        this.removeStandaloneLines = builder.removeStandaloneLines;
     }
 
     @Override
-    public Template parse(String content, Variant variant) {
+    public Template parse(String content, Variant variant, String id) {
         String generatedId = generateId();
-        return newParser(null).parse(new StringReader(content), Optional.ofNullable(variant), generatedId, generatedId);
+        return newParser(id).parse(new StringReader(content), Optional.ofNullable(variant), generatedId, generatedId);
     }
 
     private Parser newParser(String id) {
@@ -128,10 +110,6 @@ class EngineImpl implements Engine {
     @Override
     public void removeTemplates(Predicate<String> test) {
         templates.keySet().removeIf(test);
-    }
-
-    PublisherFactory getPublisherFactory() {
-        return publisherFactory;
     }
 
     String generateId() {

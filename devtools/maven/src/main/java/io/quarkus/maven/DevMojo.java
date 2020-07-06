@@ -310,7 +310,7 @@ public class DevMojo extends AbstractMojo {
             }
 
             if (jvmArgs != null) {
-                args.addAll(Arrays.asList(jvmArgs.split(" ")));
+                args.addAll(Arrays.asList(CommandLineUtils.translateCommandline(jvmArgs)));
             }
 
             // the following flags reduce startup time and are acceptable only for dev purposes
@@ -407,21 +407,25 @@ public class DevMojo extends AbstractMojo {
      */
     private void handleResources() throws MojoExecutionException {
         List<Resource> resources = project.getResources();
-        if (!resources.isEmpty()) {
-            Plugin resourcesPlugin = project.getPlugin(ORG_APACHE_MAVEN_PLUGINS + ":" + MAVEN_RESOURCES_PLUGIN);
-            MojoExecutor.executeMojo(
-                    MojoExecutor.plugin(
-                            MojoExecutor.groupId(ORG_APACHE_MAVEN_PLUGINS),
-                            MojoExecutor.artifactId(MAVEN_RESOURCES_PLUGIN),
-                            MojoExecutor.version(resourcesPlugin.getVersion()),
-                            resourcesPlugin.getDependencies()),
-                    MojoExecutor.goal("resources"),
-                    getPluginConfig(resourcesPlugin),
-                    MojoExecutor.executionEnvironment(
-                            project,
-                            session,
-                            pluginManager));
+        if (resources.isEmpty()) {
+            return;
         }
+        Plugin resourcesPlugin = project.getPlugin(ORG_APACHE_MAVEN_PLUGINS + ":" + MAVEN_RESOURCES_PLUGIN);
+        if (resourcesPlugin == null) {
+            return;
+        }
+        MojoExecutor.executeMojo(
+                MojoExecutor.plugin(
+                        MojoExecutor.groupId(ORG_APACHE_MAVEN_PLUGINS),
+                        MojoExecutor.artifactId(MAVEN_RESOURCES_PLUGIN),
+                        MojoExecutor.version(resourcesPlugin.getVersion()),
+                        resourcesPlugin.getDependencies()),
+                MojoExecutor.goal("resources"),
+                getPluginConfig(resourcesPlugin),
+                MojoExecutor.executionEnvironment(
+                        project,
+                        session,
+                        pluginManager));
     }
 
     private void executeCompileGoal(Plugin plugin, String groupId, String artifactId) throws MojoExecutionException {
@@ -635,16 +639,16 @@ public class DevMojo extends AbstractMojo {
             setKotlinSpecificFlags(devModeContext);
             final LocalProject localProject;
             if (noDeps) {
-                localProject = LocalProject.load(outputDirectory.toPath());
+                localProject = LocalProject.load(project.getModel().getPomFile().toPath());
                 addProject(devModeContext, localProject, true);
-                pomFiles.add(localProject.getDir().resolve("pom.xml"));
+                pomFiles.add(localProject.getRawModel().getPomFile().toPath());
                 devModeContext.getLocalArtifacts()
                         .add(new AppArtifactKey(localProject.getGroupId(), localProject.getArtifactId(), null, "jar"));
             } else {
-                localProject = LocalProject.loadWorkspace(outputDirectory.toPath());
+                localProject = LocalProject.loadWorkspace(project.getModel().getPomFile().toPath());
                 for (LocalProject project : filterExtensionDependencies(localProject)) {
                     addProject(devModeContext, project, project == localProject);
-                    pomFiles.add(project.getDir().resolve("pom.xml"));
+                    pomFiles.add(project.getRawModel().getPomFile().toPath());
                     devModeContext.getLocalArtifacts()
                             .add(new AppArtifactKey(project.getGroupId(), project.getArtifactId(), null, "jar"));
                 }
@@ -657,7 +661,12 @@ public class DevMojo extends AbstractMojo {
             //in most cases these are not used, however they need to be present for some
             //parent-first cases such as logging
             for (Artifact appDep : project.getArtifacts()) {
-                addToClassPaths(classPathManifest, appDep.getFile());
+                // only add the artifact if it's present in the dev mode context
+                // we need this to avoid having jars on the classpath multiple times
+                if (!devModeContext.getLocalArtifacts().contains(new AppArtifactKey(appDep.getGroupId(), appDep.getArtifactId(),
+                        appDep.getClassifier(), appDep.getArtifactHandler().getExtension()))) {
+                    addToClassPaths(classPathManifest, appDep.getFile());
+                }
             }
 
             //now we need to build a temporary jar to actually run
@@ -871,16 +880,12 @@ public class DevMojo extends AbstractMojo {
 
         for (LocalProject project : localProject.getSelfWithLocalDeps()) {
             inProject.add(project.getKey());
-            final Artifact projectDep = this.project.getArtifactMap().get(project.getGroupId() + ':' + project.getArtifactId());
-            if (project.getClassesDir() != null
-                    && (
-                    // if it is not found among project.getArtifacts() it shouldn't be included (e.g. a local test dependency)
-                    (localProject != project && projectDep == null)
-                            //if this project also contains Quarkus extensions we do no want to include these in the discovery
-                            //a bit of an edge case, but if you try and include a sample project with your extension you will
-                            //run into problems without this
-                            || (Files.exists(project.getClassesDir().resolve("META-INF/quarkus-extension.properties")) ||
-                                    Files.exists(project.getClassesDir().resolve("META-INF/quarkus-build-steps.list"))))) {
+            if (project.getClassesDir() != null &&
+            //if this project also contains Quarkus extensions we do no want to include these in the discovery
+            //a bit of an edge case, but if you try and include a sample project with your extension you will
+            //run into problems without this
+                    (Files.exists(project.getClassesDir().resolve("META-INF/quarkus-extension.properties")) ||
+                            Files.exists(project.getClassesDir().resolve("META-INF/quarkus-build-steps.list")))) {
                 toRemove.add(project);
                 extensionsAndDeps.add(project.getKey());
             } else {

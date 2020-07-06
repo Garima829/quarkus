@@ -10,6 +10,7 @@ import javax.annotation.PreDestroy;
 import javax.annotation.Priority;
 import javax.enterprise.context.ApplicationScoped;
 import javax.enterprise.context.BeforeDestroyed;
+import javax.enterprise.event.Event;
 import javax.enterprise.event.Observes;
 import javax.enterprise.inject.Produces;
 import javax.inject.Singleton;
@@ -44,14 +45,17 @@ import io.quarkus.arc.Arc;
 import io.quarkus.arc.InstanceHandle;
 import io.quarkus.runtime.StartupEvent;
 import io.quarkus.scheduler.Scheduled;
+import io.quarkus.scheduler.Scheduled.ConcurrentExecution;
 import io.quarkus.scheduler.ScheduledExecution;
 import io.quarkus.scheduler.Scheduler;
+import io.quarkus.scheduler.SkippedExecution;
 import io.quarkus.scheduler.Trigger;
 import io.quarkus.scheduler.runtime.ScheduledInvoker;
 import io.quarkus.scheduler.runtime.ScheduledMethodMetadata;
 import io.quarkus.scheduler.runtime.SchedulerContext;
 import io.quarkus.scheduler.runtime.SchedulerRuntimeConfig;
 import io.quarkus.scheduler.runtime.SimpleScheduler;
+import io.quarkus.scheduler.runtime.SkipConcurrentExecutionInvoker;
 
 @Singleton
 public class QuartzScheduler implements Scheduler {
@@ -73,7 +77,7 @@ public class QuartzScheduler implements Scheduler {
     }
 
     public QuartzScheduler(SchedulerContext context, QuartzSupport quartzSupport, Config config,
-            SchedulerRuntimeConfig schedulerRuntimeConfig) {
+            SchedulerRuntimeConfig schedulerRuntimeConfig, Event<SkippedExecution> skippedExecutionEvent) {
         enabled = schedulerRuntimeConfig.enabled;
         if (!enabled) {
             LOGGER.info("Quartz scheduler is disabled by config property and will not be started");
@@ -82,6 +86,7 @@ public class QuartzScheduler implements Scheduler {
             LOGGER.info("No scheduled business methods found - Quartz scheduler will not be started");
             this.scheduler = null;
         } else {
+            // identity -> scheduled invoker instance
             Map<String, ScheduledInvoker> invokers = new HashMap<>();
             UserTransaction transaction = null;
 
@@ -105,8 +110,6 @@ public class QuartzScheduler implements Scheduler {
                     transaction.begin();
                 }
                 for (ScheduledMethodMetadata method : context.getScheduledMethods()) {
-
-                    invokers.put(method.getInvokerClassName(), context.createInvoker(method.getInvokerClassName()));
                     int nameSequence = 0;
 
                     for (Scheduled scheduled : method.getSchedules()) {
@@ -114,8 +117,16 @@ public class QuartzScheduler implements Scheduler {
                         if (identity.isEmpty()) {
                             identity = ++nameSequence + "_" + method.getInvokerClassName();
                         }
+                        ScheduledInvoker invoker = context.createInvoker(method.getInvokerClassName());
+                        if (scheduled.concurrentExecution() == ConcurrentExecution.SKIP) {
+                            invoker = new SkipConcurrentExecutionInvoker(invoker, skippedExecutionEvent);
+                        }
+                        invokers.put(identity, invoker);
+
                         JobBuilder jobBuilder = JobBuilder.newJob(InvokerJob.class)
+                                // new JobKey(identity, "io.quarkus.scheduler.Scheduler")
                                 .withIdentity(identity, Scheduler.class.getName())
+                                // this info is redundant but keep it for backward compatibility
                                 .usingJobData(INVOKER_KEY, method.getInvokerClassName())
                                 .requestRecovery();
                         ScheduleBuilder<?> scheduleBuilder;
@@ -325,46 +336,64 @@ public class QuartzScheduler implements Scheduler {
 
         @Override
         public void execute(JobExecutionContext context) {
-            Trigger trigger = new Trigger() {
-
-                @Override
-                public Instant getNextFireTime() {
-                    Date nextFireTime = context.getTrigger().getNextFireTime();
-                    return nextFireTime != null ? nextFireTime.toInstant() : null;
-                }
-
-                @Override
-                public Instant getPreviousFireTime() {
-                    Date previousFireTime = context.getTrigger().getPreviousFireTime();
-                    return previousFireTime != null ? previousFireTime.toInstant() : null;
-                }
-
-                @Override
-                public String getId() {
-                    return context.getTrigger().getKey().toString();
-                }
-            };
-            String invokerClass = context.getJobDetail().getJobDataMap().getString(INVOKER_KEY);
-            ScheduledInvoker scheduledInvoker = invokers.get(invokerClass);
+            QuartzTrigger trigger = new QuartzTrigger(context);
+            ScheduledInvoker scheduledInvoker = invokers.get(context.getJobDetail().getKey().getName());
             if (scheduledInvoker != null) { // could be null from previous runs
-                scheduledInvoker.invoke(new ScheduledExecution() {
-                    @Override
-                    public Trigger getTrigger() {
-                        return trigger;
-                    }
-
-                    @Override
-                    public Instant getScheduledFireTime() {
-                        return context.getScheduledFireTime().toInstant();
-                    }
-
-                    @Override
-                    public Instant getFireTime() {
-                        return context.getFireTime().toInstant();
-                    }
-                });
+                scheduledInvoker.invoke(new QuartzScheduledExecution(trigger));
             }
         }
+    }
+
+    static class QuartzTrigger implements Trigger {
+
+        final JobExecutionContext context;
+
+        public QuartzTrigger(JobExecutionContext context) {
+            this.context = context;
+        }
+
+        @Override
+        public Instant getNextFireTime() {
+            Date nextFireTime = context.getTrigger().getNextFireTime();
+            return nextFireTime != null ? nextFireTime.toInstant() : null;
+        }
+
+        @Override
+        public Instant getPreviousFireTime() {
+            Date previousFireTime = context.getTrigger().getPreviousFireTime();
+            return previousFireTime != null ? previousFireTime.toInstant() : null;
+        }
+
+        @Override
+        public String getId() {
+            return context.getTrigger().getKey().toString();
+        }
+
+    }
+
+    static class QuartzScheduledExecution implements ScheduledExecution {
+
+        final QuartzTrigger trigger;
+
+        public QuartzScheduledExecution(QuartzTrigger trigger) {
+            this.trigger = trigger;
+        }
+
+        @Override
+        public Trigger getTrigger() {
+            return trigger;
+        }
+
+        @Override
+        public Instant getFireTime() {
+            return trigger.context.getScheduledFireTime().toInstant();
+        }
+
+        @Override
+        public Instant getScheduledFireTime() {
+            return trigger.context.getFireTime().toInstant();
+        }
+
     }
 
     static class InvokerJobFactory extends SimpleJobFactory {

@@ -1,7 +1,27 @@
 package io.quarkus.kubernetes.deployment;
 
-import static io.quarkus.kubernetes.deployment.Constants.*;
-import static io.quarkus.kubernetes.spi.KubernetesDeploymentTargetBuildItem.*;
+import static io.quarkus.kubernetes.deployment.Constants.DEFAULT_HTTP_PORT;
+import static io.quarkus.kubernetes.deployment.Constants.DEFAULT_S2I_IMAGE_NAME;
+import static io.quarkus.kubernetes.deployment.Constants.DEPLOYMENT;
+import static io.quarkus.kubernetes.deployment.Constants.DEPLOYMENT_CONFIG;
+import static io.quarkus.kubernetes.deployment.Constants.HTTP_PORT;
+import static io.quarkus.kubernetes.deployment.Constants.KNATIVE;
+import static io.quarkus.kubernetes.deployment.Constants.KUBERNETES;
+import static io.quarkus.kubernetes.deployment.Constants.MAX_NODE_PORT_VALUE;
+import static io.quarkus.kubernetes.deployment.Constants.MAX_PORT_NUMBER;
+import static io.quarkus.kubernetes.deployment.Constants.MINIKUBE;
+import static io.quarkus.kubernetes.deployment.Constants.MIN_NODE_PORT_VALUE;
+import static io.quarkus.kubernetes.deployment.Constants.MIN_PORT_NUMBER;
+import static io.quarkus.kubernetes.deployment.Constants.OPENSHIFT;
+import static io.quarkus.kubernetes.deployment.Constants.OPENSHIFT_APP_RUNTIME;
+import static io.quarkus.kubernetes.deployment.Constants.QUARKUS;
+import static io.quarkus.kubernetes.deployment.Constants.QUARKUS_ANNOTATIONS_BUILD_TIMESTAMP;
+import static io.quarkus.kubernetes.deployment.Constants.QUARKUS_ANNOTATIONS_COMMIT_ID;
+import static io.quarkus.kubernetes.deployment.Constants.QUARKUS_ANNOTATIONS_VCS_URL;
+import static io.quarkus.kubernetes.deployment.Constants.SERVICE;
+import static io.quarkus.kubernetes.spi.KubernetesDeploymentTargetBuildItem.DEFAULT_PRIORITY;
+import static io.quarkus.kubernetes.spi.KubernetesDeploymentTargetBuildItem.VANILLA_KUBERNETES_PRIORITY;
+import static io.quarkus.kubernetes.spi.KubernetesDeploymentTargetBuildItem.mergeList;
 
 import java.io.File;
 import java.io.IOException;
@@ -9,11 +29,21 @@ import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.security.MessageDigest;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.jboss.logging.Logger;
@@ -28,7 +58,29 @@ import io.dekorate.kubernetes.config.EnvBuilder;
 import io.dekorate.kubernetes.config.Label;
 import io.dekorate.kubernetes.config.PortBuilder;
 import io.dekorate.kubernetes.configurator.AddPort;
-import io.dekorate.kubernetes.decorator.*;
+import io.dekorate.kubernetes.decorator.AddAnnotationDecorator;
+import io.dekorate.kubernetes.decorator.AddAwsElasticBlockStoreVolumeDecorator;
+import io.dekorate.kubernetes.decorator.AddAzureDiskVolumeDecorator;
+import io.dekorate.kubernetes.decorator.AddAzureFileVolumeDecorator;
+import io.dekorate.kubernetes.decorator.AddConfigMapVolumeDecorator;
+import io.dekorate.kubernetes.decorator.AddEnvVarDecorator;
+import io.dekorate.kubernetes.decorator.AddImagePullSecretDecorator;
+import io.dekorate.kubernetes.decorator.AddInitContainerDecorator;
+import io.dekorate.kubernetes.decorator.AddLabelDecorator;
+import io.dekorate.kubernetes.decorator.AddLivenessProbeDecorator;
+import io.dekorate.kubernetes.decorator.AddMountDecorator;
+import io.dekorate.kubernetes.decorator.AddPvcVolumeDecorator;
+import io.dekorate.kubernetes.decorator.AddReadinessProbeDecorator;
+import io.dekorate.kubernetes.decorator.AddRoleBindingResourceDecorator;
+import io.dekorate.kubernetes.decorator.AddSecretVolumeDecorator;
+import io.dekorate.kubernetes.decorator.AddServiceAccountResourceDecorator;
+import io.dekorate.kubernetes.decorator.ApplyArgsDecorator;
+import io.dekorate.kubernetes.decorator.ApplyCommandDecorator;
+import io.dekorate.kubernetes.decorator.ApplyImagePullPolicyDecorator;
+import io.dekorate.kubernetes.decorator.ApplyServiceAccountNamedDecorator;
+import io.dekorate.kubernetes.decorator.ApplyWorkingDirDecorator;
+import io.dekorate.kubernetes.decorator.RemoveAnnotationDecorator;
+import io.dekorate.logger.NoopLogger;
 import io.dekorate.processor.SimpleFileReader;
 import io.dekorate.processor.SimpleFileWriter;
 import io.dekorate.project.BuildInfo;
@@ -55,7 +107,17 @@ import io.quarkus.deployment.builditem.GeneratedFileSystemResourceBuildItem;
 import io.quarkus.deployment.pkg.PackageConfig;
 import io.quarkus.deployment.pkg.builditem.OutputTargetBuildItem;
 import io.quarkus.deployment.util.FileUtil;
-import io.quarkus.kubernetes.spi.*;
+import io.quarkus.kubernetes.deployment.Annotations.Prometheus;
+import io.quarkus.kubernetes.spi.KubernetesAnnotationBuildItem;
+import io.quarkus.kubernetes.spi.KubernetesCommandBuildItem;
+import io.quarkus.kubernetes.spi.KubernetesDeploymentTargetBuildItem;
+import io.quarkus.kubernetes.spi.KubernetesEnvBuildItem;
+import io.quarkus.kubernetes.spi.KubernetesHealthLivenessPathBuildItem;
+import io.quarkus.kubernetes.spi.KubernetesHealthReadinessPathBuildItem;
+import io.quarkus.kubernetes.spi.KubernetesLabelBuildItem;
+import io.quarkus.kubernetes.spi.KubernetesPortBuildItem;
+import io.quarkus.kubernetes.spi.KubernetesRoleBuildItem;
+import io.quarkus.smallrye.metrics.deployment.spi.MetricsConfigurationBuildItem;
 
 class KubernetesProcessor {
 
@@ -118,12 +180,28 @@ class KubernetesProcessor {
 
     @BuildStep
     public List<KubernetesAnnotationBuildItem> createAnnotations(KubernetesConfig kubernetesConfig,
-            OpenshiftConfig openshiftConfig, KnativeConfig knativeConfig) {
-        List<KubernetesAnnotationBuildItem> items = new ArrayList<KubernetesAnnotationBuildItem>();
-        kubernetesConfig.annotations.forEach((k, v) -> items.add(new KubernetesAnnotationBuildItem(k, v, KUBERNETES)));
-        openshiftConfig.annotations.forEach((k, v) -> items.add(new KubernetesAnnotationBuildItem(k, v, OPENSHIFT)));
-        knativeConfig.annotations.forEach((k, v) -> items.add(new KubernetesAnnotationBuildItem(k, v, KNATIVE)));
-        return items;
+            OpenshiftConfig openshiftConfig, KnativeConfig knativeConfig,
+            Optional<MetricsConfigurationBuildItem> metricsConfiguration, List<KubernetesPortBuildItem> kubernetesPorts) {
+        List<KubernetesAnnotationBuildItem> result = new ArrayList<KubernetesAnnotationBuildItem>();
+        addAnnotations(kubernetesConfig, KUBERNETES, metricsConfiguration, kubernetesPorts, result);
+        addAnnotations(openshiftConfig, OPENSHIFT, metricsConfiguration, kubernetesPorts, result);
+        addAnnotations(knativeConfig, KNATIVE, metricsConfiguration, kubernetesPorts, result);
+        return result;
+    }
+
+    private void addAnnotations(PlatformConfiguration config, String target,
+            Optional<MetricsConfigurationBuildItem> metricsConfigurationBuildItem,
+            List<KubernetesPortBuildItem> kubernetesPorts,
+            List<KubernetesAnnotationBuildItem> result) {
+        for (Map.Entry<String, String> entry : config.getAnnotations().entrySet()) {
+            result.add(new KubernetesAnnotationBuildItem(entry.getKey(), entry.getValue(), target));
+        }
+        if (metricsConfigurationBuildItem.isPresent() && !kubernetesPorts.isEmpty()) {
+            result.add(new KubernetesAnnotationBuildItem(Prometheus.SCRAPE, "true", target));
+            result.add(new KubernetesAnnotationBuildItem(Prometheus.PATH, metricsConfigurationBuildItem.get().getPath(),
+                    target));
+            result.add(new KubernetesAnnotationBuildItem(Prometheus.PORT, "" + kubernetesPorts.get(0).getPort(), target));
+        }
     }
 
     @BuildStep
@@ -198,13 +276,13 @@ class KubernetesProcessor {
         final Map<String, String> generatedResourcesMap;
         // by passing false to SimpleFileWriter, we ensure that no files are actually written during this phase
         Project project = createProject(applicationInfo, artifactPath);
-        final SessionWriter sessionWriter = new SimpleFileWriter(root, false);
+        final SessionWriter sessionWriter = new SimpleFileWriter(project, false);
         final SessionReader sessionReader = new SimpleFileReader(
                 project.getRoot().resolve("src").resolve("main").resolve("kubernetes"), kubernetesDeploymentTargets
                         .getEntriesSortedByPriority().stream()
                         .map(EnabledKubernetesDeploymentTargetsBuildItem.Entry::getName).collect(Collectors.toSet()));
         sessionWriter.setProject(project);
-        final Session session = Session.getSession(new io.dekorate.logger.NoopLogger());
+        final Session session = Session.getSession(new NoopLogger());
         session.setWriter(sessionWriter);
         session.setReader(sessionReader);
 
@@ -249,21 +327,24 @@ class KubernetesProcessor {
 
         List<String> generatedFileNames = new ArrayList<>(generatedResourcesMap.size());
         for (Map.Entry<String, String> resourceEntry : generatedResourcesMap.entrySet()) {
-            String fileName = resourceEntry.getKey().replace(root.toAbsolutePath().toString(), "");
-            String relativePath = resourceEntry.getKey().replace(root.toAbsolutePath().toString(), KUBERNETES);
+            Path path = Paths.get(resourceEntry.getKey());
+            //We need to ignore the config yml
+            if (!path.toFile().getParentFile().getName().equals("dekorate")) {
+                continue;
+            }
+            String fileName = path.toFile().getName();
+            Path targetPath = outputTarget.getOutputDirectory().resolve(KUBERNETES).resolve(fileName);
+            String relativePath = targetPath.toAbsolutePath().toString().replace(root.toAbsolutePath().toString(), "");
 
+            resourceEntry.getKey().replace(root.toAbsolutePath().toString(), KUBERNETES);
             if (fileName.endsWith(".yml") || fileName.endsWith(".json")) {
                 String target = fileName.substring(0, fileName.lastIndexOf("."));
-                if (target.startsWith(File.separator)) {
-                    target = target.substring(1);
-                }
-
                 if (!deploymentTargets.contains(target)) {
                     continue;
                 }
             }
 
-            generatedFileNames.add(fileName.replace("/", ""));
+            generatedFileNames.add(fileName);
             generatedResourceProducer.produce(
                     new GeneratedFileSystemResourceBuildItem(
                             // we need to make sure we are only passing the relative path to the build item
@@ -394,7 +475,7 @@ class KubernetesProcessor {
             session.resources().decorate(target, new AddInitContainerDecorator(name, ContainerConverter.convert(e)));
         });
 
-        config.getContainers().entrySet().forEach(e -> {
+        config.getSidecars().entrySet().forEach(e -> {
             session.resources().decorate(target, new AddSidecarDecorator(name, ContainerConverter.convert(e)));
         });
 
@@ -552,7 +633,8 @@ class KubernetesProcessor {
         session.resources().decorate(KUBERNETES,
                 new ApplyServiceTypeDecorator(kubernetesName, kubernetesConfig.getServiceType().name()));
         if ((kubernetesConfig.getServiceType() == ServiceType.NodePort) && kubernetesConfig.nodePort.isPresent()) {
-            session.resources().decorate(KUBERNETES, new AddNodePortDecorator(openshiftName, kubernetesConfig.nodePort.get()));
+            session.resources().decorate(KUBERNETES,
+                    new AddNodePortDecorator(openshiftName, kubernetesConfig.nodePort.getAsInt()));
         }
         session.resources().decorate(MINIKUBE,
                 new ApplyServiceTypeDecorator(kubernetesName, ServiceType.NodePort.name()));
@@ -562,7 +644,8 @@ class KubernetesProcessor {
         session.resources().decorate(OPENSHIFT,
                 new ApplyServiceTypeDecorator(openshiftName, openshiftConfig.getServiceType().name()));
         if ((openshiftConfig.getServiceType() == ServiceType.NodePort) && openshiftConfig.nodePort.isPresent()) {
-            session.resources().decorate(OPENSHIFT, new AddNodePortDecorator(openshiftName, openshiftConfig.nodePort.get()));
+            session.resources().decorate(OPENSHIFT,
+                    new AddNodePortDecorator(openshiftName, openshiftConfig.nodePort.getAsInt()));
         }
 
         session.resources().decorate(KNATIVE,

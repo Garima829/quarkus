@@ -37,6 +37,7 @@ public enum Feature {
     INFINISPAN_CLIENT,
     INFINISPAN_EMBEDDED,
     JAEGER,
+    JDBC_DB2,
     JDBC_DERBY,
     JDBC_H2,
     JDBC_POSTGRESQL,
@@ -65,6 +66,7 @@ public enum Feature {
     OIDC,
     PICOCLI,
     QUTE,
+    REDIS_CLIENT,
     RESTEASY,
     RESTEASY_JACKSON,
     RESTEASY_JAXB,
@@ -113,8 +115,7 @@ public enum Feature {
     VERTX,
     VERTX_WEB,
     VERTX_GRAPHQL,
-    WEBJARS_LOCATOR,
-    ;
+    WEBJARS_LOCATOR;
 
     public String getName() {
         return toString().toLowerCase().replace("_", "-");

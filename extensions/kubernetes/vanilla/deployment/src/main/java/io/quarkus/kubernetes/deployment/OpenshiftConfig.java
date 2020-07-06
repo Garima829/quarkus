@@ -4,6 +4,7 @@ package io.quarkus.kubernetes.deployment;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 
 import io.dekorate.kubernetes.annotation.ImagePullPolicy;
 import io.dekorate.kubernetes.annotation.ServiceType;
@@ -106,7 +107,7 @@ public class OpenshiftConfig implements PlatformConfiguration {
      * The nodePort to set when serviceType is set to nodePort
      */
     @ConfigItem
-    Optional<Integer> nodePort;
+    OptionalInt nodePort;
 
     /**
      * Image pull policy
@@ -307,7 +308,7 @@ public class OpenshiftConfig implements PlatformConfiguration {
         return initContainers;
     }
 
-    public Map<String, ContainerConfig> getContainers() {
+    public Map<String, ContainerConfig> getSidecars() {
         return containers;
     }
 

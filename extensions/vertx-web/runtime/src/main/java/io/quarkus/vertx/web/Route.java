@@ -10,13 +10,24 @@ import io.quarkus.vertx.web.Route.Routes;
 import io.vertx.core.Handler;
 import io.vertx.core.http.HttpMethod;
 import io.vertx.ext.web.Router;
+import io.vertx.ext.web.RoutingContext;
 
 /**
- * Annotation used to configure reactive routes in a declarative way.
+ * This annotation can be used to configure a reactive route in a declarative way.
  * <p>
- * The target business method must return {@code void} and accept exactly one argument. must return {@code void} and accept
- * exactly one argument. The type of the argument can be {@link io.vertx.ext.web.RoutingContext},
- * {@link io.vertx.reactivex.ext.web.RoutingContext} or {@link io.quarkus.vertx.web.RoutingExchange}.
+ * The target business method must be non-private and non-static.
+ * The annotated method can accept arguments of the following types:
+ * <ul>
+ * <li>{@code io.vertx.ext.web.RoutingContext}</li>
+ * <li>{@code io.vertx.reactivex.ext.web.RoutingContext}</li>
+ * <li>{@code io.quarkus.vertx.web.RoutingExchange}</li>
+ * <li>{@code io.vertx.core.http.HttpServerRequest}</li>
+ * <li>{@code io.vertx.core.http.HttpServerResponse}</li>
+ * <li>{@code io.vertx.reactivex.core.http.HttpServerRequest}</li>
+ * <li>{@code io.vertx.reactivex.core.http.HttpServerResponse}</li>
+ * </ul>
+ * If the annotated method returns {@code void} then it has to accept at least one argument.
+ * If the annotated method does not return {@code void} then the arguments are optional.
  * <p>
  * If both {@link #path()} and {@link #regex()} are set the regular expression is used for matching.
  * <p>
@@ -64,8 +75,11 @@ public @interface Route {
 
     /**
      * Used for content-based routing.
+     * <p>
+     * If no {@code Content-Type} header is set then try to use the most acceptable content type.
      * 
      * @see io.vertx.ext.web.Route#produces(String)
+     * @see RoutingContext#getAcceptableContentType()
      * @return the produced content types
      */
     String[] produces() default {};
