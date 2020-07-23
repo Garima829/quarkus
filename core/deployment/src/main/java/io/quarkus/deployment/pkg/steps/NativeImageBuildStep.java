@@ -174,6 +174,7 @@ public class NativeImageBuildStep {
             Process versionProcess = new ProcessBuilder(versionCommand.toArray(new String[0]))
                     .redirectErrorStream(true)
                     .start();
+            versionProcess.waitFor();
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(versionProcess.getInputStream(), StandardCharsets.UTF_8))) {
                 graalVMVersion = reader.lines().filter((l) -> l.startsWith("GraalVM Version")).findFirst();
@@ -223,7 +224,11 @@ public class NativeImageBuildStep {
                 }
             }
             command.add("-J-Duser.language=" + System.getProperty("user.language"));
-            command.add("-J-Dfile.encoding=" + System.getProperty("file.encoding"));
+            // Native image runtime uses the host's (i.e. build time) value of file.encoding
+            // system property. We intentionally default this to UTF-8 to avoid platform specific
+            // defaults to be picked up which can then result in inconsistent behaviour in the
+            // generated native application
+            command.add("-J-Dfile.encoding=UTF-8");
 
             if (enableSslNative) {
                 nativeConfig.enableHttpsUrlHandler = true;
@@ -286,9 +291,9 @@ public class NativeImageBuildStep {
             } else {
                 command.add("-H:-AddAllCharsets");
             }
-            if (nativeConfig.includeAllTimeZones) {
-                command.add("-H:+IncludeAllTimeZones");
-            } else {
+            //if 'includeAllTimeZones' is set, don't request it explicitly as native-image will log a warning about this being now the default.
+            //(But still disable it when necessary)
+            if (!nativeConfig.includeAllTimeZones) {
                 command.add("-H:-IncludeAllTimeZones");
             }
             if (!protocols.isEmpty()) {
@@ -419,11 +424,11 @@ public class NativeImageBuildStep {
 
     private void checkGraalVMVersion(String version) {
         log.info("Running Quarkus native-image plugin on " + version);
-        final List<String> obsoleteGraalVmVersions = Arrays.asList("1.0.0", "19.0.", "19.1.", "19.2.", "19.3.0", "20.0.");
+        final List<String> obsoleteGraalVmVersions = Arrays.asList("1.0.0", "19.0.", "19.1.", "19.2.", "19.3.", "20.0.");
         final boolean vmVersionIsObsolete = obsoleteGraalVmVersions.stream().anyMatch(v -> version.contains(" " + v));
         if (vmVersionIsObsolete) {
             throw new IllegalStateException("Out of date version of GraalVM detected: " + version + "."
-                    + " Quarkus currently supports GraalVM 19.3.2 and 20.1.0. Please upgrade GraalVM to one of these versions.");
+                    + " Quarkus currently supports 20.1.0. Please upgrade GraalVM to this version.");
         }
     }
 

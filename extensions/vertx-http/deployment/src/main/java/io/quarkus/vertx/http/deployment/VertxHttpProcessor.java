@@ -18,7 +18,6 @@ import io.quarkus.arc.deployment.AdditionalBeanBuildItem;
 import io.quarkus.arc.deployment.BeanContainerBuildItem;
 import io.quarkus.bootstrap.util.ZipUtils;
 import io.quarkus.builder.BuildException;
-import io.quarkus.deployment.IsNormal;
 import io.quarkus.deployment.annotations.BuildProducer;
 import io.quarkus.deployment.annotations.BuildStep;
 import io.quarkus.deployment.annotations.ExecutionTime;
@@ -93,7 +92,7 @@ class VertxHttpProcessor {
         }
     }
 
-    @BuildStep(onlyIf = IsNormal.class)
+    @BuildStep
     public KubernetesPortBuildItem kubernetes() {
         int port = ConfigProvider.getConfig().getOptionalValue("quarkus.http.port", Integer.class).orElse(8080);
         return new KubernetesPortBuildItem(port, "http");
@@ -103,11 +102,10 @@ class VertxHttpProcessor {
     @Record(ExecutionTime.RUNTIME_INIT)
     VertxWebRouterBuildItem initializeRouter(VertxHttpRecorder recorder,
             CoreVertxBuildItem vertx,
-            List<RouteBuildItem> routes, LaunchModeBuildItem launchModeBuildItem,
+            List<RouteBuildItem> routes,
             ShutdownContextBuildItem shutdown) {
 
-        RuntimeValue<Router> router = recorder.initializeRouter(vertx.getVertx(), launchModeBuildItem.getLaunchMode(),
-                shutdown);
+        RuntimeValue<Router> router = recorder.initializeRouter(vertx.getVertx());
         for (RouteBuildItem route : routes) {
             recorder.addRoute(router, route.getRouteFunction(), route.getHandler(), route.getType());
         }

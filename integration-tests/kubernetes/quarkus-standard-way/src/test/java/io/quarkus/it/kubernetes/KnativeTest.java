@@ -43,6 +43,10 @@ public class KnativeTest {
         assertThat(kubernetesList).filteredOn(i -> "Service".equals(i.getKind())).hasOnlyOneElementSatisfying(i -> {
             assertThat(i).isInstanceOfSatisfying(Service.class, s -> {
                 assertThat(s.getSpec()).satisfies(spec -> {
+                    assertThat(s.getMetadata()).satisfies(m -> {
+                        assertThat(m.getNamespace()).isNull();
+                    });
+
                     assertThat(spec.getTemplate()).satisfies(template -> {
                         assertThat(template.getSpec()).satisfies(templateSpec -> {
                             assertThat(templateSpec.getContainers()).hasSize(1).hasOnlyOneElementSatisfying(c -> {

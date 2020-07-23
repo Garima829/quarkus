@@ -10,13 +10,14 @@ on:
       - 'CONTRIBUTING.md'
       - 'ADOPTERS.md'
       - 'TROUBLESHOOTING.md'
+      - 'MAINTAINERS.adoc'
       - 'LICENSE.txt'
       - 'dco.txt'
       - '.github/ISSUE_TEMPLATE/**'
       - '.github/autoissuelabeler.yml'
       - '.github/boring-cyborg.yml'
       - '.github/NativeBuildReport.java'
-      - '.dependabot/**'
+      - '.github/dependabot.yml'
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
     paths-ignore:
@@ -31,12 +32,12 @@ on:
       - '.github/autoissuelabeler.yml'
       - '.github/boring-cyborg.yml'
       - '.github/NativeBuildReport.java'
-      - '.dependabot/**'
+      - '.github/dependabot.yml'
 
 env:
   # Workaround testsuite locale issue
   LANG: en_US.UTF-8
-  NATIVE_TEST_MAVEN_OPTS: "-B --settings .github/mvn-settings.xml --fail-at-end -Dquarkus.native.container-build=true -Dtest-postgresql -Dtest-elasticsearch -Dtest-keycloak -Dtest-amazon-services -Dtest-db2 -Dtest-mysql -Dtest-mariadb -Dmariadb.base_url='jdbc:mariadb://localhost:3308' -Dmariadb.url='jdbc:mariadb://localhost:3308/hibernate_orm_test'  -Dtest-mssql -Dtest-vault -Dtest-neo4j -Dtest-kafka -Dtest-redis -Dnative-image.xmx=5g -Dnative -Dformat.skip install"
+  NATIVE_TEST_MAVEN_OPTS: "-B --settings .github/mvn-settings.xml --fail-at-end -Dquarkus.native.container-build=true -Dtest-postgresql -Dtest-elasticsearch -Dtest-keycloak -Dtest-amazon-services -Dtest-db2 -Dtest-mysql -Dtest-mariadb -Dmariadb.base_url='jdbc:mariadb://localhost:3308' -Dmariadb.url='jdbc:mariadb://localhost:3308/hibernate_orm_test'  -Dtest-mssql -Dtest-vault -Dtest-neo4j -Dtest-kafka -Dtest-redis -Dnative-image.xmx=5g -Dnative -Dnative.surefire.skip -Dformat.skip -Dno-descriptor-tests install"
   JVM_TEST_MAVEN_OPTS: "-e -B --settings .github/mvn-settings.xml -Dtest-postgresql -Dtest-elasticsearch -Dtest-db2 -Dtest-mysql -Dtest-mariadb -Dmariadb.base_url='jdbc:mariadb://localhost:3308' -Dmariadb.url='jdbc:mariadb://localhost:3308/hibernate_orm_test'  -Dtest-mssql -Dtest-amazon-services -Dtest-vault -Dtest-neo4j -Dtest-kafka -Dtest-keycloak -Dtest-redis -Dformat.skip"
   DB_USER: hibernate_orm_test
   DB_PASSWORD: hibernate_orm_test
@@ -107,13 +108,13 @@ jobs:
         java :
           - { name: Java8,
               java-version: 8,
-              maven_args: "-pl !integration-tests/vault-app,!integration-tests/vault-agroal,!integration-tests/vault,!integration-tests/google-cloud-functions-http,!integration-tests/gradle,!integration-tests/google-cloud-functions"
+              maven_args: "-pl !integration-tests/vault-app,!integration-tests/vault-agroal,!integration-tests/vault,!integration-tests/google-cloud-functions-http,!integration-tests/gradle,!integration-tests/google-cloud-functions,!integration-tests/funqy-google-cloud-functions"
           }
           - {
             name: "Java 8 - 242",
             java-version: 8,
             release: "jdk8u242-b08",
-            maven_args: "-pl !integration-tests/google-cloud-functions-http,!integration-tests/gradle,!integration-tests/google-cloud-functions"
+            maven_args: "-pl !integration-tests/google-cloud-functions-http,!integration-tests/gradle,!integration-tests/google-cloud-functions,!integration-tests/funqy-google-cloud-functions"
           }
           - {
             name: Java 11,
@@ -128,7 +129,7 @@ jobs:
 
     services:
       keycloak:
-        image: quay.io/keycloak/keycloak:10.0.2
+        image: quay.io/keycloak/keycloak:11.0.0
         env:
           KEYCLOAK_USER: admin
           KEYCLOAK_PASSWORD: admin
@@ -324,8 +325,7 @@ jobs:
     name: Windows JDK 11 JVM Gradle Tests
     needs: build-jdk11
     runs-on: windows-latest
-    timeout-minutes: 60
-
+    timeout-minutes: 80
     steps:
       - uses: actions/checkout@v2
       - name: Set up JDK 11
@@ -343,6 +343,7 @@ jobs:
         run: tar -xzf maven-repo.tgz -C ~
       - name: Build with Gradle
         uses: eskatos/gradle-command-action@v1
+        timeout-minutes: 60
         env:
           GRADLE_OPTS: -Xmx1408m
         with:
@@ -393,7 +394,7 @@ jobs:
     name: Native Tests - ${{matrix.category}}
     needs: build-jdk11
     runs-on: ubuntu-latest
-    # Ignore the following YAML Schema error 
+    # Ignore the following YAML Schema error
     timeout-minutes: ${{matrix.timeout}}
     strategy:
       max-parallel: 8
@@ -436,6 +437,7 @@ jobs:
               flyway
               hibernate-orm-panache
               hibernate-orm-panache-kotlin
+              hibernate-orm-envers
               liquibase
           - category: Data4
             neo4j: "true"
@@ -449,14 +451,20 @@ jobs:
               hibernate-orm-rest-data-panache
           - category: Data5
             postgres: "true"
-            timeout: 60
+            timeout: 65
             test-modules: >
               jpa-postgresql
-              hibernate-search-elasticsearch
               narayana-stm
               narayana-jta
               reactive-pg-client
               hibernate-reactive-postgresql
+          - category: Data6
+            postgres: "true"
+            timeout: 40
+            test-modules: >
+              elasticsearch-rest-client
+              elasticsearch-rest-high-level-client
+              hibernate-search-elasticsearch
           - category: Amazon
             amazonServices: "true"
             timeout: 45
@@ -614,7 +622,7 @@ jobs:
               -server -Xms64m -Xmx512m -XX:MetaspaceSize=96M \
               -XX:MaxMetaspaceSize=256m -Djava.net.preferIPv4Stack=true -Djava.awt.headless=true \
               -Dkeycloak.profile.feature.upload_scripts=enabled" \
-            -d quay.io/keycloak/keycloak:10.0.2
+            -d quay.io/keycloak/keycloak:11.0.0
         if: matrix.keycloak
       - uses: actions/checkout@v2
       - name: Set up JDK 11

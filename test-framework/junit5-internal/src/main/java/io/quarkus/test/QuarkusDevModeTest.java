@@ -7,11 +7,13 @@ import java.io.UncheckedIOException;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystem;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.attribute.FileTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.List;
@@ -39,6 +41,7 @@ import org.junit.jupiter.api.extension.TestInstanceFactoryContext;
 import org.junit.jupiter.api.extension.TestInstantiationException;
 
 import io.quarkus.bootstrap.model.AppArtifactKey;
+import io.quarkus.bootstrap.util.ZipUtils;
 import io.quarkus.deployment.dev.CompilationProvider;
 import io.quarkus.deployment.dev.DevModeContext;
 import io.quarkus.deployment.dev.DevModeMain;
@@ -81,9 +84,11 @@ public class QuarkusDevModeTest
     private DevModeMain devModeMain;
     private Path deploymentDir;
     private Supplier<JavaArchive> archiveProducer;
+    private List<String> codeGenSources = Collections.emptyList();
     private String logFileName;
     private InMemoryLogHandler inMemoryLogHandler = new InMemoryLogHandler((r) -> false);
 
+    private Path deploymentSourceParentPath;
     private Path deploymentSourcePath;
     private Path deploymentResourcePath;
     private Path projectSourceRoot;
@@ -106,6 +111,11 @@ public class QuarkusDevModeTest
 
     public QuarkusDevModeTest setArchiveProducer(Supplier<JavaArchive> archiveProducer) {
         this.archiveProducer = archiveProducer;
+        return this;
+    }
+
+    public QuarkusDevModeTest setCodeGenSources(String... codeGenSources) {
+        this.codeGenSources = Arrays.asList(codeGenSources);
         return this;
     }
 
@@ -173,15 +183,16 @@ public class QuarkusDevModeTest
             //TODO: this is a huge hack, at the moment this just guesses the source location
             //this can be improved, but as this is for testing extensions it is probably fine for now
             String sourcePath = System.getProperty("quarkus.test.source-path");
-            ;
             if (sourcePath == null) {
                 //TODO: massive hack, make sure this works in eclipse
                 projectSourceRoot = testLocation.getParent().getParent().resolve("src/test/java");
             } else {
                 projectSourceRoot = Paths.get(sourcePath);
             }
+            // TODO: again a hack, assumes the sources dir is one dir above java sources path
+            Path projectSourceParent = projectSourceRoot.getParent();
 
-            DevModeContext context = exportArchive(deploymentDir, projectSourceRoot);
+            DevModeContext context = exportArchive(deploymentDir, projectSourceRoot, projectSourceParent);
             context.setArgs(commandLineArgs);
             context.setTest(true);
             context.setAbortOnFailedStart(true);
@@ -214,12 +225,14 @@ public class QuarkusDevModeTest
         rootLogger.removeHandler(inMemoryLogHandler);
     }
 
-    private DevModeContext exportArchive(Path deploymentDir, Path testSourceDir) {
+    private DevModeContext exportArchive(Path deploymentDir, Path testSourceDir, Path testSourcesParentDir) {
         try {
 
             deploymentSourcePath = deploymentDir.resolve("src/main/java");
+            deploymentSourceParentPath = deploymentDir.resolve("src/main");
             deploymentResourcePath = deploymentDir.resolve("src/main/resources");
             Path classes = deploymentDir.resolve("target/classes");
+            Path targetDir = deploymentDir.resolve("target");
             Path cache = deploymentDir.resolve("target/dev-cache");
             Files.createDirectories(deploymentSourcePath);
             Files.createDirectories(deploymentResourcePath);
@@ -230,8 +243,8 @@ public class QuarkusDevModeTest
             //then we attempt to generate a source tree
             JavaArchive archive = archiveProducer.get();
             archive.as(ExplodedExporter.class).exportExplodedInto(classes.toFile());
-
             copyFromSource(testSourceDir, deploymentSourcePath, classes);
+            copyCodeGenSources(testSourcesParentDir, deploymentSourceParentPath, codeGenSources);
 
             //now copy resources
             //we assume everything that is not a .class file is a resource
@@ -267,7 +280,10 @@ public class QuarkusDevModeTest
                     new DevModeContext.ModuleInfo(AppArtifactKey.fromString("io.quarkus.test:app-under-test"), "default",
                             deploymentDir.toAbsolutePath().toString(),
                             Collections.singleton(deploymentSourcePath.toAbsolutePath().toString()),
-                            classes.toAbsolutePath().toString(), deploymentResourcePath.toAbsolutePath().toString()));
+                            classes.toAbsolutePath().toString(), deploymentResourcePath.toAbsolutePath().toString(),
+                            deploymentSourceParentPath.toAbsolutePath().toString(),
+                            targetDir.resolve("generated-sources").toAbsolutePath().toString(),
+                            targetDir.toAbsolutePath().toString()));
 
             setDevModeRunnerJarFile(context);
             return context;
@@ -276,25 +292,55 @@ public class QuarkusDevModeTest
         }
     }
 
+    private void copyCodeGenSources(Path testSourcesParent, Path deploymentSourceParentPath, List<String> codeGenSources) {
+        for (String codeGenDirName : codeGenSources) {
+            Path codeGenSource = testSourcesParent.resolve(codeGenDirName);
+            try {
+                Path target = deploymentSourceParentPath.resolve(codeGenDirName);
+                try (Stream<Path> files = Files.walk(codeGenSource)) {
+                    files.forEach(
+                            file -> {
+                                Path targetPath = target.resolve(codeGenSource.relativize(file));
+                                try {
+                                    Files.copy(file, targetPath);
+                                } catch (IOException e) {
+                                    throw new RuntimeException(
+                                            "Failed to copy file : " + file + " to " + targetPath.toAbsolutePath().toString());
+                                }
+                            });
+                }
+            } catch (IOException e) {
+                throw new RuntimeException("Failed to copy code gen directory", e);
+            }
+        }
+    }
+
     private static void setDevModeRunnerJarFile(final DevModeContext context) {
+        handleSurefire(context);
+        if (context.getDevModeRunnerJarFile() == null) {
+            handleIntelliJ(context);
+        }
+    }
+
+    /*
+     * See https://github.com/quarkusio/quarkus/issues/6280
+     * Maven surefire plugin launches the (forked) JVM for tests using a "surefirebooter" jar file.
+     * This jar file's name starts with the prefix "surefirebooter" and ends with the extension ".jar".
+     * The jar is launched using "java -jar .../surefirebooter*.jar ..." semantics. This jar has a
+     * MANIFEST which contains "Class-Path" entries. These entries trigger a bug in the JDK code
+     * https://bugs.openjdk.java.net/browse/JDK-8232170 which causes hot deployment related logic in Quarkus
+     * to fail in dev mode.
+     * The goal in this next section is to narrow down to this specific surefirebooter*.jar which was used to launch
+     * the tests and mark it as the "dev mode runner jar" (through DevModeContext#setDevModeRunnerJarFile),
+     * so that programmatic compilation of code (during hot deployment) doesn't run into issues noted in
+     * https://bugs.openjdk.java.net/browse/JDK-8232170.
+     * In reality the surefirebooter*.jar isn't really a "dev mode runner jar" (i.e. it's not the -dev.jar that
+     * Quarkus generates), but it's fine to mark it as such to get past this issue. This is more of a workaround
+     * on top of another workaround. In the medium/long term the actual JDK issue fix will make its way into
+     * almost all prominently used Java versions.
+     */
+    private static void handleSurefire(DevModeContext context) {
         try {
-            /*
-             * See https://github.com/quarkusio/quarkus/issues/6280
-             * Maven surefire plugin launches the (forked) JVM for tests using a "surefirebooter" jar file.
-             * This jar file's name starts with the prefix "surefirebooter" and ends with the extension ".jar".
-             * The jar is launched using "java -jar .../surefirebooter*.jar ..." semantics. This jar has a
-             * MANIFEST which contains "Class-Path" entries. These entries trigger a bug in the JDK code
-             * https://bugs.openjdk.java.net/browse/JDK-8232170 which causes hot deployment related logic in Quarkus
-             * to fail in dev mode.
-             * The goal in this next section is to narrow down to this specific surefirebooter*.jar which was used to launch
-             * the tests and mark it as the "dev mode runner jar" (through DevModeContext#setDevModeRunnerJarFile),
-             * so that programmatic compilation of code (during hot deployment) doesn't run into issues noted in
-             * https://bugs.openjdk.java.net/browse/JDK-8232170.
-             * In reality the surefirebooter*.jar isn't really a "dev mode runner jar" (i.e. it's not the -dev.jar that
-             * Quarkus generates), but it's fine to mark it as such to get past this issue. This is more of a workaround
-             * on top of another workaround. In the medium/long term the actual JDK issue fix will make its way into
-             * almost all prominently used Java versions.
-             */
             final Enumeration<URL> manifests = QuarkusDevModeTest.class.getClassLoader().getResources("META-INF/MANIFEST.MF");
             while (manifests.hasMoreElements()) {
                 final URL url = manifests.nextElement();
@@ -328,9 +374,38 @@ public class QuarkusDevModeTest
                     break;
                 }
             }
-        } catch (Throwable t) {
-            // ignore and move on
-            return;
+        } catch (Throwable ignored) {
+
+        }
+    }
+
+    /*
+     * IntelliJ does not create a special jar when running the tests but instead sets up the classpath and uses
+     * the main class com.intellij.rt.junit.JUnitStarter from idea_rt.jar.
+     * To make DevModeMain happy in this case, all we need to do here is create a dummy jar file in the proper directory
+     */
+    private static void handleIntelliJ(DevModeContext context) {
+        try {
+            final Enumeration<URL> manifests = QuarkusDevModeTest.class.getClassLoader().getResources("META-INF/MANIFEST.MF");
+            while (manifests.hasMoreElements()) {
+                final URL url = manifests.nextElement();
+                if (!url.getPath().contains("idea_rt.jar")) {
+                    continue;
+                }
+
+                Path intelliJPath = Paths.get(context.getApplicationRoot().getClassesPath()).getParent().resolve("intellij");
+                Path dummyJar = intelliJPath.resolve("dummy.jar");
+
+                // create the empty dummy jar
+                try (FileSystem out = ZipUtils.newZip(dummyJar)) {
+
+                }
+
+                context.setDevModeRunnerJarFile(dummyJar.toFile());
+                break;
+            }
+        } catch (Throwable ignored) {
+
         }
     }
 
@@ -342,6 +417,16 @@ public class QuarkusDevModeTest
      */
     public void modifySourceFile(String sourceFile, Function<String, String> mutator) {
         modifyFile(sourceFile, mutator, deploymentSourcePath);
+    }
+
+    /**
+     * Modifies a file
+     *
+     * @param file file path relative to the project's sources parent dir (`src/main` for Maven)
+     * @param mutator A function that will modify the file
+     */
+    public void modifyFile(String file, Function<String, String> mutator) {
+        modifyPath(mutator, deploymentSourceParentPath, deploymentSourceParentPath.resolve(file));
     }
 
     /**
@@ -380,29 +465,33 @@ public class QuarkusDevModeTest
         try (Stream<Path> sources = Files.walk(path)) {
             sources.forEach(s -> {
                 if (s.endsWith(name)) {
-                    try {
-                        byte[] data;
-                        try (InputStream in = Files.newInputStream(s)) {
-                            data = FileUtil.readFileContents(in);
-
-                        }
-                        String oldContent = new String(data, StandardCharsets.UTF_8);
-                        String content = mutator.apply(oldContent);
-                        if (content.equals(oldContent)) {
-                            throw new RuntimeException("File was not modified, mutator function had no effect");
-                        }
-
-                        sleepForFileChanges(path);
-                        Files.write(s, content.getBytes(StandardCharsets.UTF_8));
-                    } catch (IOException e) {
-                        throw new UncheckedIOException(e);
-                    }
+                    modifyPath(mutator, path, s);
                 }
             });
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
 
+    }
+
+    private void modifyPath(Function<String, String> mutator, Path sourceDirectory, Path input) {
+        try {
+            byte[] data;
+            try (InputStream in = Files.newInputStream(input)) {
+                data = FileUtil.readFileContents(in);
+
+            }
+            String oldContent = new String(data, StandardCharsets.UTF_8);
+            String content = mutator.apply(oldContent);
+            if (content.equals(oldContent)) {
+                throw new RuntimeException("File was not modified, mutator function had no effect");
+            }
+
+            sleepForFileChanges(sourceDirectory);
+            Files.write(input, content.getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     public void sleepForFileChanges(Path path) {

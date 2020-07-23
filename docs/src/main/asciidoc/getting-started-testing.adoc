@@ -93,7 +93,7 @@ must be set, as the default version does not support Junit 5:
 </plugin>
 ----
 
-We also set the `java.util.logging` system property to make sure tests will use the correct logmanager and `maven.home` to ensure that custom configuration
+We also set the `java.util.logging.manager` system property to make sure tests will use the correct logmanager and `maven.home` to ensure that custom configuration
 from `${maven.home}/conf/settings.xml` is applied (if any).
 
 The project should also contain a simple test:
@@ -698,6 +698,10 @@ public class GreetingResourceTest {
 
 If you are using the `quarkus-hibernate-orm-panache` or `quarkus-mongodb-panache` extensions, check out the link:hibernate-orm-panache#mocking[Hibernate ORM with Panache Mocking] and link:mongodb-panache#mocking[MongoDB with Panache Mocking] documentation for the easiest way to mock your data access.
 
+== Testing Security
+
+If you are using Quarkus Security, check out the link:security.adoc#testing-security[Testing Security] section for information on how to easily test security features of the application.
+
 [#quarkus-test-resource]
 == Starting services before the Quarkus application starts
 
@@ -727,6 +731,8 @@ Most IDEs offer the possibility to run a selected class as JUnit test directly. 
 * `java.util.logging.manager` (see link:logging[Logging Guide])
 
 * `maven.home` (only if there are any custom settings in `${maven.home}/conf/settings.mxl`, see link:maven-tooling[Maven Guide])
+
+* `maven.settings` (in case a custom version of `settings.xml` file should be used for the tests)
 
 === Eclipse separate JRE definition
 

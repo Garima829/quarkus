@@ -9,8 +9,11 @@ import static io.vertx.core.file.impl.FileResolver.CACHE_DIR_BASE_PROP_NAME;
 
 import java.io.File;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -51,16 +54,56 @@ public class VertxCoreRecorder {
 
     static volatile int blockingThreadPoolSize;
 
+    /**
+     * This is a bit of a hack. In dev mode we undeploy all the verticles on restart, except
+     * for this one
+     */
+    private static volatile String webDeploymentId;
+
     public Supplier<Vertx> configureVertx(VertxConfiguration config,
             LaunchMode launchMode, ShutdownContext shutdown, List<Consumer<VertxOptions>> customizers) {
-        vertx = new VertxSupplier(config, customizers);
         if (launchMode != LaunchMode.DEVELOPMENT) {
+            vertx = new VertxSupplier(config, customizers);
             // we need this to be part of the last shutdown tasks because closing it early (basically before Arc)
             // could cause problem to beans that rely on Vert.x and contain shutdown tasks
             shutdown.addLastShutdownTask(new Runnable() {
                 @Override
                 public void run() {
                     destroy();
+                }
+            });
+        } else {
+            if (vertx == null) {
+                vertx = new VertxSupplier(config, customizers);
+            } else if (vertx.v != null) {
+                tryCleanTccl(vertx.v);
+            }
+            shutdown.addLastShutdownTask(new Runnable() {
+                @Override
+                public void run() {
+                    List<CountDownLatch> latches = new ArrayList<>();
+                    if (vertx.v != null) {
+                        Set<String> ids = new HashSet<>(vertx.v.deploymentIDs());
+                        for (String id : ids) {
+                            if (!id.equals(webDeploymentId)) {
+                                CountDownLatch latch = new CountDownLatch(1);
+                                latches.add(latch);
+                                vertx.v.undeploy(id, new Handler<AsyncResult<Void>>() {
+                                    @Override
+                                    public void handle(AsyncResult<Void> event) {
+                                        latch.countDown();
+                                    }
+                                });
+                            }
+                        }
+                        for (CountDownLatch latch : latches) {
+                            try {
+                                latch.await();
+                            } catch (InterruptedException e) {
+                                LOGGER.error("Failed waiting for verticle undeploy", e);
+                            }
+                        }
+                    }
                 }
             });
         }
@@ -303,7 +346,8 @@ public class VertxCoreRecorder {
         return new Supplier<EventLoopGroup>() {
             @Override
             public EventLoopGroup get() {
-                return ((VertxImpl) vertx.get()).getAcceptorEventLoopGroup();
+                vertx.get();
+                return ((VertxImpl) vertx.v).getAcceptorEventLoopGroup();
             }
         };
     }
@@ -364,5 +408,9 @@ public class VertxCoreRecorder {
             }
             return options;
         }
+    }
+
+    public static void setWebDeploymentId(String webDeploymentId) {
+        VertxCoreRecorder.webDeploymentId = webDeploymentId;
     }
 }

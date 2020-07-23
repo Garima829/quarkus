@@ -4,17 +4,21 @@ import static io.quarkus.maven.it.ApplicationNameAndVersionTestUtil.assertApplic
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.Charset;
+import java.nio.file.Files;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import java.util.Properties;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -232,6 +236,23 @@ public class DevMojoIT extends RunAndCheckMojoTestBase {
         await()
                 .pollDelay(100, TimeUnit.MILLISECONDS)
                 .atMost(1, TimeUnit.MINUTES).until(() -> DevModeTestUtils.getHttpResponse("/openapi").contains("hello"));
+    }
+
+    @Test
+    public void testProjectWithExtension() throws MavenInvocationException, IOException {
+        testDir = getTargetDir("projects/project-with-extension");
+        runAndCheck();
+
+        final List<String> extDepWarnings = Files.readAllLines(testDir.toPath().resolve("build-project-with-extension.log"))
+                .stream().filter(s -> s.startsWith("[WARNING] Local Quarkus extension dependency "))
+                .collect(Collectors.toList());
+        assertTrue(extDepWarnings
+                .contains("[WARNING] Local Quarkus extension dependency org.acme:acme-quarkus-ext will not be hot-reloadable"));
+        assertTrue(extDepWarnings
+                .contains("[WARNING] Local Quarkus extension dependency org.acme:acme-common will not be hot-reloadable"));
+        assertTrue(extDepWarnings.contains(
+                "[WARNING] Local Quarkus extension dependency org.acme:acme-common-transitive will not be hot-reloadable"));
+        assertEquals(3, extDepWarnings.size());
     }
 
     @Test
@@ -795,10 +816,10 @@ public class DevMojoIT extends RunAndCheckMojoTestBase {
         RunningInvoker invoker = new RunningInvoker(testDir, false);
 
         // to properly surface the problem of multiple classpath entries, we need to install the project to the local m2
-        invoker.execute(Collections.singletonList("install"), Collections.emptyMap());
         MavenProcessInvocationResult installInvocation = invoker.execute(Arrays.asList("clean", "install", "-DskipTests"),
                 Collections.emptyMap());
         assertThat(installInvocation.getProcess().waitFor(2, TimeUnit.MINUTES)).isTrue();
+        assertThat(installInvocation.getExecutionException()).isNull();
         assertThat(installInvocation.getExitCode()).isEqualTo(0);
 
         // run dev mode from the runner module
@@ -813,5 +834,11 @@ public class DevMojoIT extends RunAndCheckMojoTestBase {
 
         // test that we don't get multiple instances of a resource when loading from the ClassLoader
         assertThat(DevModeTestUtils.getHttpResponse("/cp/resourcesCount")).isEqualTo("1");
+    }
+
+    @Test
+    public void testThatDependencyInParentIsEvaluated() throws IOException, MavenInvocationException {
+        testDir = initProject("projects/multimodule-parent-dep");
+        runAndCheck();
     }
 }

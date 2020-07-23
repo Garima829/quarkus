@@ -109,6 +109,7 @@ public class VertxHttpRecorder {
 
     private static volatile Handler<RoutingContext> hotReplacementHandler;
     private static volatile HotReplacementContext hotReplacementContext;
+    private static volatile RemoteSyncHandler remoteSyncHandler;
 
     private static volatile Runnable closeTask;
 
@@ -123,7 +124,14 @@ public class VertxHttpRecorder {
             //as the underlying handler has not had a chance to install a read handler yet
             //and data that arrives while the blocking task is being processed will be lost
             httpServerRequest.pause();
-            rootHandler.handle(httpServerRequest);
+            Handler<HttpServerRequest> rh = VertxHttpRecorder.rootHandler;
+            if (rh != null) {
+                rh.handle(httpServerRequest);
+            } else {
+                //very rare race condition, that can happen when dev mode is shutting down
+                httpServerRequest.resume();
+                httpServerRequest.response().setStatusCode(503).end();
+            }
         }
     };
 
@@ -152,9 +160,15 @@ public class VertxHttpRecorder {
             // the server start to fail
             hotReplacementHandler = prevHotReplacementHandler;
         }
-        VertxConfiguration vertxConfiguration = new VertxConfiguration();
-        ConfigInstantiator.handleObject(vertxConfiguration);
-        Vertx vertx = VertxCoreRecorder.initialize(vertxConfiguration, null);
+        Supplier<Vertx> supplier = VertxCoreRecorder.getVertx();
+        Vertx vertx;
+        if (supplier == null) {
+            VertxConfiguration vertxConfiguration = new VertxConfiguration();
+            ConfigInstantiator.handleObject(vertxConfiguration);
+            vertx = VertxCoreRecorder.initialize(vertxConfiguration, null);
+        } else {
+            vertx = supplier.get();
+        }
 
         try {
             HttpBuildTimeConfig buildConfig = new HttpBuildTimeConfig();
@@ -180,15 +194,10 @@ public class VertxHttpRecorder {
         }
     }
 
-    public RuntimeValue<Router> initializeRouter(final Supplier<Vertx> vertxRuntimeValue,
-            final LaunchMode launchMode, final ShutdownContext shutdownContext) {
+    public RuntimeValue<Router> initializeRouter(final Supplier<Vertx> vertxRuntimeValue) {
 
         Vertx vertx = vertxRuntimeValue.get();
         Router router = Router.router(vertx);
-        if (hotReplacementHandler != null) {
-            router.route().order(Integer.MIN_VALUE).handler(hotReplacementHandler);
-        }
-
         return new RuntimeValue<>(router);
     }
 
@@ -252,7 +261,7 @@ public class VertxHttpRecorder {
         if (requireBodyHandler) {
             //if this is set then everything needs the body handler installed
             //TODO: config etc
-            router.route().order(Integer.MIN_VALUE).handler(new Handler<RoutingContext>() {
+            router.route().order(Integer.MIN_VALUE + 1).handler(new Handler<RoutingContext>() {
                 @Override
                 public void handle(RoutingContext routingContext) {
                     routingContext.request().resume();
@@ -294,14 +303,29 @@ public class VertxHttpRecorder {
         Handler<HttpServerRequest> root;
         if (rootPath.equals("/")) {
             if (hotReplacementHandler != null) {
-                router.route().order(-1).handler(hotReplacementHandler);
+                //recorders are always executed in the current CL
+                ClassLoader currentCl = Thread.currentThread().getContextClassLoader();
+                router.route().order(Integer.MIN_VALUE).handler(new Handler<RoutingContext>() {
+                    @Override
+                    public void handle(RoutingContext event) {
+                        Thread.currentThread().setContextClassLoader(currentCl);
+                        hotReplacementHandler.handle(event);
+                    }
+                });
             }
             root = router;
         } else {
             Router mainRouter = Router.router(vertx.get());
             mainRouter.mountSubRouter(rootPath, router);
             if (hotReplacementHandler != null) {
-                mainRouter.route().order(-1).handler(hotReplacementHandler);
+                ClassLoader currentCl = Thread.currentThread().getContextClassLoader();
+                mainRouter.route().order(Integer.MIN_VALUE).handler(new Handler<RoutingContext>() {
+                    @Override
+                    public void handle(RoutingContext event) {
+                        Thread.currentThread().setContextClassLoader(currentCl);
+                        hotReplacementHandler.handle(event);
+                    }
+                });
             }
             root = mainRouter;
         }
@@ -374,7 +398,7 @@ public class VertxHttpRecorder {
             });
         }
         if (launchMode == LaunchMode.DEVELOPMENT && liveReloadConfig.password.isPresent()) {
-            root = new RemoteSyncHandler(liveReloadConfig.password.get(), root, hotReplacementContext);
+            root = remoteSyncHandler = new RemoteSyncHandler(liveReloadConfig.password.get(), root, hotReplacementContext);
         }
         rootHandler = root;
     }
@@ -433,6 +457,7 @@ public class VertxHttpRecorder {
         try {
 
             String deploymentId = futureResult.get();
+            VertxCoreRecorder.setWebDeploymentId(deploymentId);
             closeTask = new Runnable() {
                 @Override
                 public synchronized void run() {
@@ -457,6 +482,10 @@ public class VertxHttpRecorder {
                             }
                         }
                         closeTask = null;
+                        if (remoteSyncHandler != null) {
+                            remoteSyncHandler.close();
+                            remoteSyncHandler = null;
+                        }
                     }
                 }
             };
@@ -524,10 +553,7 @@ public class VertxHttpRecorder {
             }
         }
         serverOptions.setMaxHeaderSize(httpConfiguration.limits.maxHeaderSize.asBigInteger().intValueExact());
-        Optional<MemorySize> maxChunkSize = httpConfiguration.limits.maxChunkSize;
-        if (maxChunkSize.isPresent()) {
-            serverOptions.setMaxChunkSize(maxChunkSize.get().asBigInteger().intValueExact());
-        }
+        serverOptions.setMaxChunkSize(httpConfiguration.limits.maxChunkSize.asBigInteger().intValueExact());
         setIdleTimeout(httpConfiguration, serverOptions);
 
         if (certFile.isPresent() && keyFile.isPresent()) {
@@ -600,6 +626,7 @@ public class VertxHttpRecorder {
         serverOptions.setTcpQuickAck(httpConfiguration.tcpQuickAck);
         serverOptions.setTcpCork(httpConfiguration.tcpCork);
         serverOptions.setTcpFastOpen(httpConfiguration.tcpFastOpen);
+        serverOptions.setMaxInitialLineLength(httpConfiguration.limits.maxInitialLineLength);
 
         return serverOptions;
     }
@@ -684,15 +711,13 @@ public class VertxHttpRecorder {
         options.setPort(httpConfiguration.determinePort(launchMode));
         setIdleTimeout(httpConfiguration, options);
         options.setMaxHeaderSize(httpConfiguration.limits.maxHeaderSize.asBigInteger().intValueExact());
-        Optional<MemorySize> maxChunkSize = httpConfiguration.limits.maxChunkSize;
-        if (maxChunkSize.isPresent()) {
-            options.setMaxChunkSize(maxChunkSize.get().asBigInteger().intValueExact());
-        }
+        options.setMaxChunkSize(httpConfiguration.limits.maxChunkSize.asBigInteger().intValueExact());
         options.setWebsocketSubProtocols(websocketSubProtocols);
         options.setReusePort(httpConfiguration.soReusePort);
         options.setTcpQuickAck(httpConfiguration.tcpQuickAck);
         options.setTcpCork(httpConfiguration.tcpCork);
         options.setTcpFastOpen(httpConfiguration.tcpFastOpen);
+        options.setMaxInitialLineLength(httpConfiguration.limits.maxInitialLineLength);
         return options;
     }
 
@@ -705,10 +730,7 @@ public class VertxHttpRecorder {
         options.setHost(httpConfiguration.domainSocket);
         setIdleTimeout(httpConfiguration, options);
         options.setMaxHeaderSize(httpConfiguration.limits.maxHeaderSize.asBigInteger().intValueExact());
-        Optional<MemorySize> maxChunkSize = httpConfiguration.limits.maxChunkSize;
-        if (maxChunkSize.isPresent()) {
-            options.setMaxChunkSize(maxChunkSize.get().asBigInteger().intValueExact());
-        }
+        options.setMaxChunkSize(httpConfiguration.limits.maxChunkSize.asBigInteger().intValueExact());
         options.setWebsocketSubProtocols(websocketSubProtocols);
         return options;
     }

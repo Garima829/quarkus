@@ -23,6 +23,13 @@ public class ServerLimitsConfig {
     /**
      * The max HTTP chunk size
      */
-    @ConfigItem
-    public Optional<MemorySize> maxChunkSize;
+    @ConfigItem(defaultValue = "8192")
+    public MemorySize maxChunkSize;
+
+    /**
+     * The maximum length of the initial line (e.g. {@code "GET / HTTP/1.0"}).
+     */
+    @ConfigItem(defaultValue = "4096")
+    public int maxInitialLineLength;
+
 }

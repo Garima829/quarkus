@@ -4,40 +4,34 @@ import org.jboss.jandex.DotName;
 import org.jboss.jandex.MethodInfo;
 import org.jboss.jandex.Type;
 
-import io.smallrye.mutiny.Multi;
-import io.smallrye.mutiny.Uni;
-import io.vertx.core.buffer.Buffer;
-
 /**
  * Describe a request handler.
  */
-public class HandlerDescriptor {
+class HandlerDescriptor {
 
-    private static final DotName DOT_NAME_UNI = DotName.createSimple(Uni.class.getName());
-    private static final DotName DOT_NAME_MULTI = DotName.createSimple(Multi.class.getName());
     private final MethodInfo method;
 
-    public HandlerDescriptor(MethodInfo method) {
+    HandlerDescriptor(MethodInfo method) {
         this.method = method;
     }
 
-    public Type getReturnType() {
+    Type getReturnType() {
         return method.returnType();
     }
 
-    public boolean isReturningVoid() {
+    boolean isReturningVoid() {
         return method.returnType().kind().equals(Type.Kind.VOID);
     }
 
-    public boolean isReturningUni() {
-        return method.returnType().name().equals(DOT_NAME_UNI);
+    boolean isReturningUni() {
+        return method.returnType().name().equals(DotNames.UNI);
     }
 
-    public boolean isReturningMulti() {
-        return method.returnType().name().equals(DOT_NAME_MULTI);
+    boolean isReturningMulti() {
+        return method.returnType().name().equals(DotNames.MULTI);
     }
 
-    public Type getContentType() {
+    Type getContentType() {
         if (isReturningVoid()) {
             return null;
         }
@@ -50,23 +44,23 @@ public class HandlerDescriptor {
         return getReturnType();
     }
 
-    public boolean isContentTypeString() {
+    boolean isContentTypeString() {
         Type type = getContentType();
         if (type == null) {
             return false;
         }
-        return type.name().equals(DotName.createSimple(String.class.getName()));
+        return type.name().equals(io.quarkus.arc.processor.DotNames.STRING);
     }
 
-    public boolean isContentTypeBuffer() {
+    boolean isContentTypeBuffer() {
         Type type = getContentType();
         if (type == null) {
             return false;
         }
-        return type.name().equals(DotName.createSimple(Buffer.class.getName()));
+        return type.name().equals(DotNames.BUFFER);
     }
 
-    public boolean isContentTypeRxBuffer() {
+    boolean isContentTypeRxBuffer() {
         Type type = getContentType();
         if (type == null) {
             return false;
@@ -75,7 +69,7 @@ public class HandlerDescriptor {
                 .equals(DotName.createSimple(io.vertx.reactivex.core.buffer.Buffer.class.getName()));
     }
 
-    public boolean isContentTypeMutinyBuffer() {
+    boolean isContentTypeMutinyBuffer() {
         Type type = getContentType();
         if (type == null) {
             return false;

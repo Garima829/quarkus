@@ -17,6 +17,7 @@ import org.jboss.jandex.DotName;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Persistable;
 import org.springframework.data.domain.Slice;
 import org.springframework.data.domain.Sort;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -26,8 +27,8 @@ import org.springframework.data.repository.CrudRepository;
 import org.springframework.data.repository.NoRepositoryBean;
 import org.springframework.data.repository.PagingAndSortingRepository;
 import org.springframework.data.repository.Repository;
+import org.springframework.data.repository.RepositoryDefinition;
 import org.springframework.data.repository.query.Param;
-import org.springframework.data.repository.query.QueryByExampleExecutor;
 
 public final class DotNames {
 
@@ -39,8 +40,8 @@ public final class DotNames {
             .createSimple(PagingAndSortingRepository.class.getName());
     public static final DotName SPRING_DATA_JPA_REPOSITORY = DotName
             .createSimple(JpaRepository.class.getName());
-    public static final DotName SPRING_DATA_QUERY_EXAMPLE_EXECUTOR = DotName
-            .createSimple(QueryByExampleExecutor.class.getName());
+    public static final DotName SPRING_DATA_REPOSITORY_DEFINITION = DotName
+            .createSimple(RepositoryDefinition.class.getName());
 
     public static final Set<DotName> SUPPORTED_REPOSITORIES = new HashSet<>(Arrays.asList(
             SPRING_DATA_JPA_REPOSITORY, SPRING_DATA_PAGING_REPOSITORY, SPRING_DATA_CRUD_REPOSITORY, SPRING_DATA_REPOSITORY));
@@ -63,6 +64,8 @@ public final class DotNames {
             .createSimple(Param.class.getName());
     public static final DotName SPRING_DATA_MODIFYING = DotName
             .createSimple(Modifying.class.getName());
+    public static final DotName SPRING_DATA_PERSISTABLE = DotName
+            .createSimple(Persistable.class.getName());
 
     public static final DotName JPA_ID = DotName.createSimple(Id.class.getName());
     public static final DotName VERSION = DotName.createSimple(Version.class.getName());
