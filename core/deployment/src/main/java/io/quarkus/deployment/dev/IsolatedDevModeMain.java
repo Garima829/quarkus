@@ -41,6 +41,7 @@ import io.quarkus.deployment.CodeGenerator;
 import io.quarkus.deployment.builditem.ApplicationClassPredicateBuildItem;
 import io.quarkus.deployment.codegen.CodeGenData;
 import io.quarkus.deployment.util.FSWatchUtil;
+import io.quarkus.dev.spi.DevModeType;
 import io.quarkus.dev.spi.HotReplacementSetup;
 import io.quarkus.runner.bootstrap.AugmentActionImpl;
 import io.quarkus.runtime.ApplicationLifecycleManager;
@@ -68,6 +69,7 @@ public class IsolatedDevModeMain implements BiConsumer<CuratedApplication, Map<S
         ClassLoader old = Thread.currentThread().getContextClassLoader();
         try {
 
+            boolean augmentDone = false;
             //ok, we have resolved all the deps
             try {
                 StartupAction start = augmentAction.createInitialRuntimeApplication();
@@ -103,13 +105,15 @@ public class IsolatedDevModeMain implements BiConsumer<CuratedApplication, Map<S
 
                 startCodeGenWatcher(deploymentClassLoader, codeGens);
 
+                augmentDone = true;
                 runner = start.runMainClass(context.getArgs());
                 firstStartCompleted = true;
             } catch (Throwable t) {
                 deploymentProblem = t;
-                if (context.isAbortOnFailedStart()) {
+                if (!augmentDone) {
                     log.error("Failed to start quarkus", t);
-                } else {
+                }
+                if (!context.isAbortOnFailedStart()) {
                     //we need to set this here, while we still have the correct TCCL
                     //this is so the config is still valid, and we can read HTTP config from application.properties
                     log.info("Attempting to start hot replacement endpoint to recover from previous Quarkus startup failure");
@@ -183,7 +187,7 @@ public class IsolatedDevModeMain implements BiConsumer<CuratedApplication, Map<S
         }
     }
 
-    private RuntimeUpdatesProcessor setupRuntimeCompilation(DevModeContext context, Path appRoot)
+    private RuntimeUpdatesProcessor setupRuntimeCompilation(DevModeContext context, Path appRoot, DevModeType devModeType)
             throws Exception {
         if (!context.getAllModules().isEmpty()) {
             ServiceLoader<CompilationProvider> serviceLoader = ServiceLoader.load(CompilationProvider.class);
@@ -201,7 +205,7 @@ public class IsolatedDevModeMain implements BiConsumer<CuratedApplication, Map<S
                 return null;
             }
             RuntimeUpdatesProcessor processor = new RuntimeUpdatesProcessor(appRoot, context, compiler,
-                    this::restartApp, null);
+                    devModeType, this::restartApp, null);
 
             for (HotReplacementSetup service : ServiceLoader.load(HotReplacementSetup.class,
                     curatedApplication.getBaseRuntimeClassLoader())) {
@@ -264,7 +268,7 @@ public class IsolatedDevModeMain implements BiConsumer<CuratedApplication, Map<S
 
     //the main entry point, but loaded inside the augmentation class loader
     @Override
-    public void accept(CuratedApplication o, Map<String, Object> o2) {
+    public void accept(CuratedApplication o, Map<String, Object> params) {
         Timing.staticInitStarted(o.getBaseRuntimeClassLoader());
         //https://github.com/quarkusio/quarkus/issues/9748
         //if you have an app with all daemon threads then the app thread
@@ -287,7 +291,7 @@ public class IsolatedDevModeMain implements BiConsumer<CuratedApplication, Map<S
         try {
             curatedApplication = o;
 
-            Object potentialContext = o2.get(DevModeContext.class.getName());
+            Object potentialContext = params.get(DevModeContext.class.getName());
             if (potentialContext instanceof DevModeContext) {
                 context = (DevModeContext) potentialContext;
             } else {
@@ -336,7 +340,8 @@ public class IsolatedDevModeMain implements BiConsumer<CuratedApplication, Map<S
                                     sourcePath -> module.addSourcePaths(singleton(sourcePath.toAbsolutePath().toString()))));
                 }
             }
-            runtimeUpdatesProcessor = setupRuntimeCompilation(context, (Path) o2.get(APP_ROOT));
+            runtimeUpdatesProcessor = setupRuntimeCompilation(context, (Path) params.get(APP_ROOT),
+                    (DevModeType) params.get(DevModeType.class.getName()));
             if (runtimeUpdatesProcessor != null) {
                 runtimeUpdatesProcessor.checkForFileChange();
                 runtimeUpdatesProcessor.checkForChangedClasses();

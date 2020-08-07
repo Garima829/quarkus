@@ -74,6 +74,12 @@ public class CreateProjectMojo extends AbstractMojo {
     @Parameter(property = "projectVersion")
     private String projectVersion;
 
+    @Parameter(property = "codestartsEnabled", defaultValue = "false")
+    private boolean codestartsEnabled;
+
+    @Parameter(property = "skipExample", defaultValue = "false")
+    private boolean skipExample;
+
     /**
      * Group ID of the target platform BOM
      */
@@ -190,18 +196,21 @@ public class CreateProjectMojo extends AbstractMojo {
                     .version(projectVersion)
                     .sourceType(sourceType)
                     .className(className)
-                    .extensions(extensions);
+                    .extensions(extensions)
+                    .codestartsEnabled(codestartsEnabled)
+                    .withExampleCode(!skipExample);
             if (path != null) {
                 createProject.setValue("path", path);
             }
 
             success = createProject.execute().isSuccess();
-
-            File createdDependenciesBuildFile = new File(projectRoot, buildToolEnum.getDependenciesFile());
-            if (BuildTool.MAVEN.equals(buildToolEnum)) {
-                createMavenWrapper(createdDependenciesBuildFile, ToolsUtils.readQuarkusProperties(platform));
-            } else if (BuildTool.GRADLE.equals(buildToolEnum)) {
-                createGradleWrapper(platform, projectDirPath);
+            if (!codestartsEnabled) {
+                File createdDependenciesBuildFile = new File(projectRoot, buildToolEnum.getDependenciesFile());
+                if (BuildTool.MAVEN.equals(buildToolEnum)) {
+                    createMavenWrapper(createdDependenciesBuildFile, ToolsUtils.readQuarkusProperties(platform));
+                } else if (BuildTool.GRADLE.equals(buildToolEnum)) {
+                    createGradleWrapper(platform, projectDirPath);
+                }
             }
         } catch (Exception e) {
             throw new MojoExecutionException("Failed to generate Quarkus project", e);

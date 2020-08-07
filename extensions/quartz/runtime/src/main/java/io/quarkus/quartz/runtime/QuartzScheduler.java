@@ -31,6 +31,7 @@ import org.quartz.SchedulerFactory;
 import org.quartz.SimpleScheduleBuilder;
 import org.quartz.TriggerBuilder;
 import org.quartz.impl.StdSchedulerFactory;
+import org.quartz.simpl.InitThreadContextClassLoadHelper;
 import org.quartz.simpl.SimpleJobFactory;
 import org.quartz.spi.TriggerFiredBundle;
 
@@ -294,6 +295,7 @@ public class QuartzScheduler implements Scheduler {
         props.put(StdSchedulerFactory.PROP_SCHED_WRAP_JOB_IN_USER_TX, "false");
         props.put(StdSchedulerFactory.PROP_SCHED_SCHEDULER_THREADS_INHERIT_CONTEXT_CLASS_LOADER_OF_INITIALIZING_THREAD, "true");
         props.put(StdSchedulerFactory.PROP_THREAD_POOL_CLASS, "org.quartz.simpl.SimpleThreadPool");
+        props.put(StdSchedulerFactory.PROP_SCHED_CLASS_LOAD_HELPER_CLASS, InitThreadContextClassLoadHelper.class.getName());
         props.put(StdSchedulerFactory.PROP_THREAD_POOL_PREFIX + ".threadCount",
                 "" + quartzSupport.getRuntimeConfig().threadCount);
         props.put(StdSchedulerFactory.PROP_THREAD_POOL_PREFIX + ".threadPriority",
@@ -307,7 +309,7 @@ public class QuartzScheduler implements Scheduler {
             QuarkusQuartzConnectionPoolProvider.setDataSourceName(dataSource);
             props.put(StdSchedulerFactory.PROP_JOB_STORE_PREFIX + ".useProperties", "true");
             props.put(StdSchedulerFactory.PROP_JOB_STORE_PREFIX + ".misfireThreshold", "60000");
-            props.put(StdSchedulerFactory.PROP_JOB_STORE_PREFIX + ".tablePrefix", "QRTZ_");
+            props.put(StdSchedulerFactory.PROP_JOB_STORE_PREFIX + ".tablePrefix", buildTimeConfig.tablePrefix);
             props.put(StdSchedulerFactory.PROP_JOB_STORE_PREFIX + ".dataSource", dataSource);
             props.put(StdSchedulerFactory.PROP_JOB_STORE_PREFIX + ".driverDelegateClass",
                     quartzSupport.getDriverDialect().get());
@@ -322,7 +324,24 @@ public class QuartzScheduler implements Scheduler {
                 props.put(StdSchedulerFactory.PROP_JOB_STORE_PREFIX + ".nonManagedTXDataSource", dataSource);
             }
         }
+        props.putAll(getAdditionalConfigurationProperties(StdSchedulerFactory.PROP_PLUGIN_PREFIX, buildTimeConfig.plugins));
+        props.putAll(getAdditionalConfigurationProperties(StdSchedulerFactory.PROP_JOB_LISTENER_PREFIX,
+                buildTimeConfig.jobListeners));
+        props.putAll(getAdditionalConfigurationProperties(StdSchedulerFactory.PROP_TRIGGER_LISTENER_PREFIX,
+                buildTimeConfig.triggerListeners));
 
+        return props;
+    }
+
+    private Properties getAdditionalConfigurationProperties(String prefix, Map<String, QuartzAdditionalPropsConfig> config) {
+        Properties props = new Properties();
+        for (String key : config.keySet()) {
+            props.put(String.format("%s.%s.class", prefix, key), config.get(key).clazz);
+            for (String propsName : config.get(key).propsValue.keySet()) {
+                props.put(String.format("%s.%s.%s", prefix, key, propsName),
+                        config.get(key).propsValue.get(propsName));
+            }
+        }
         return props;
     }
 

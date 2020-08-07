@@ -4,6 +4,7 @@ import static io.quarkus.deployment.annotations.ExecutionTime.STATIC_INIT;
 import static org.objectweb.asm.Opcodes.ACC_FINAL;
 import static org.objectweb.asm.Opcodes.ACC_PRIVATE;
 
+import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.Modifier;
 import java.nio.file.Files;
@@ -53,6 +54,7 @@ import io.quarkus.deployment.annotations.BuildStep;
 import io.quarkus.deployment.annotations.Record;
 import io.quarkus.deployment.builditem.ApplicationArchivesBuildItem;
 import io.quarkus.deployment.builditem.GeneratedClassBuildItem;
+import io.quarkus.deployment.builditem.HotDeploymentWatchedFileBuildItem;
 import io.quarkus.gizmo.AssignableResultHandle;
 import io.quarkus.gizmo.BranchResult;
 import io.quarkus.gizmo.BytecodeCreator;
@@ -91,6 +93,7 @@ public class MessageBundleProcessor {
     private static final String SUFFIX = "_Bundle";
     private static final String BUNDLE_DEFAULT_KEY = "defaultKey";
     private static final String BUNDLE_LOCALE = "locale";
+    private static final String MESSAGES = "messages";
 
     static final DotName BUNDLE = DotName.createSimple(MessageBundle.class.getName());
     static final DotName MESSAGE = DotName.createSimple(Message.class.getName());
@@ -116,12 +119,22 @@ public class MessageBundleProcessor {
             ApplicationArchivesBuildItem applicationArchivesBuildItem,
             BuildProducer<GeneratedClassBuildItem> generatedClasses, BeanRegistrationPhaseBuildItem beanRegistration,
             BuildProducer<BeanConfiguratorBuildItem> configurators,
-            BuildProducer<MessageBundleMethodBuildItem> messageTemplateMethods) throws IOException {
+            BuildProducer<MessageBundleMethodBuildItem> messageTemplateMethods,
+            BuildProducer<HotDeploymentWatchedFileBuildItem> watchedFiles) throws IOException {
 
         IndexView index = beanArchiveIndex.getIndex();
         Map<String, ClassInfo> found = new HashMap<>();
         List<MessageBundleBuildItem> bundles = new ArrayList<>();
         Set<Path> messageFiles = findMessageFiles(applicationArchivesBuildItem);
+
+        Path messagesPath = applicationArchivesBuildItem.getRootArchive().getChildPath(MESSAGES);
+        for (Path messageFile : messageFiles) {
+            String messageFilePath = messagesPath.relativize(messageFile).toString();
+            if (File.separatorChar != '/') {
+                messageFilePath = messageFilePath.replace(File.separatorChar, '/');
+            }
+            watchedFiles.produce(new HotDeploymentWatchedFileBuildItem(MESSAGES + "/" + messageFilePath));
+        }
 
         // First collect all interfaces annotated with @MessageBundle
         for (AnnotationInstance bundleAnnotation : index.getAnnotations(BUNDLE)) {
@@ -433,30 +446,18 @@ public class MessageBundleProcessor {
 
         Map<String, String> generatedTypes = new HashMap<>();
 
-        ClassOutput classOutput = new GeneratedClassGizmoAdaptor(generatedClasses, new Predicate<String>() {
-            @Override
-            public boolean test(String name) {
-                int idx = name.lastIndexOf(SUFFIX);
-                String className = name.substring(0, idx).replace("/", ".");
-                if (className.contains(ValueResolverGenerator.NESTED_SEPARATOR)) {
-                    className = className.replace(ValueResolverGenerator.NESTED_SEPARATOR, "$");
-                }
-                if (applicationArchivesBuildItem.getRootArchive().getIndex()
-                        .getClassByName(DotName.createSimple(className)) != null) {
-                    return true;
-                }
-                return false;
-            }
-        });
+        ClassOutput defaultClassOutput = new GeneratedClassGizmoAdaptor(generatedClasses,
+                new AppClassPredicate(applicationArchivesBuildItem));
 
         for (MessageBundleBuildItem bundle : bundles) {
             ClassInfo bundleInterface = bundle.getDefaultBundleInterface();
-            String bundleImpl = generateImplementation(null, null, bundleInterface, classOutput, messageTemplateMethods,
+            String bundleImpl = generateImplementation(null, null, bundleInterface, defaultClassOutput, messageTemplateMethods,
                     Collections.emptyMap(), null);
             generatedTypes.put(bundleInterface.name().toString(), bundleImpl);
             for (ClassInfo localizedInterface : bundle.getLocalizedInterfaces().values()) {
                 generatedTypes.put(localizedInterface.name().toString(),
-                        generateImplementation(bundle.getDefaultBundleInterface(), bundleImpl, localizedInterface, classOutput,
+                        generateImplementation(bundle.getDefaultBundleInterface(), bundleImpl, localizedInterface,
+                                defaultClassOutput,
                                 messageTemplateMethods, Collections.emptyMap(), null));
             }
 
@@ -482,9 +483,22 @@ public class MessageBundleProcessor {
                         keyToTemplate.put(key, value);
                     }
                 }
+                String locale = entry.getKey();
+                ClassOutput localeAwareGizmoAdaptor = new GeneratedClassGizmoAdaptor(generatedClasses,
+                        new AppClassPredicate(applicationArchivesBuildItem, new Function<String, String>() {
+                            @Override
+                            public String apply(String className) {
+                                String localeSuffix = "_" + locale;
+                                if (className.endsWith(localeSuffix)) {
+                                    return className.replace(localeSuffix, "");
+                                }
+                                return className;
+                            }
+                        }));
                 generatedTypes.put(localizedFile.toString(),
-                        generateImplementation(bundle.getDefaultBundleInterface(), bundleImpl, bundleInterface, classOutput,
-                                messageTemplateMethods, keyToTemplate, entry.getKey()));
+                        generateImplementation(bundle.getDefaultBundleInterface(), bundleImpl, bundleInterface,
+                                localeAwareGizmoAdaptor,
+                                messageTemplateMethods, keyToTemplate, locale));
             }
         }
         return generatedTypes;
@@ -793,8 +807,7 @@ public class MessageBundleProcessor {
 
     private Set<Path> findMessageFiles(ApplicationArchivesBuildItem applicationArchivesBuildItem) throws IOException {
         ApplicationArchive applicationArchive = applicationArchivesBuildItem.getRootArchive();
-        String basePath = "messages";
-        Path messagesPath = applicationArchive.getChildPath(basePath);
+        Path messagesPath = applicationArchive.getChildPath(MESSAGES);
         if (messagesPath == null) {
             return Collections.emptySet();
         }
@@ -811,4 +824,30 @@ public class MessageBundleProcessor {
         return messageFiles;
     }
 
+    private static class AppClassPredicate implements Predicate<String> {
+        private final ApplicationArchivesBuildItem applicationArchivesBuildItem;
+        private final Function<String, String> additionalClassNameSanitizer;
+
+        public AppClassPredicate(ApplicationArchivesBuildItem applicationArchivesBuildItem) {
+            this(applicationArchivesBuildItem, Function.identity());
+        }
+
+        public AppClassPredicate(ApplicationArchivesBuildItem applicationArchivesBuildItem,
+                Function<String, String> additionalClassNameSanitizer) {
+            this.applicationArchivesBuildItem = applicationArchivesBuildItem;
+            this.additionalClassNameSanitizer = additionalClassNameSanitizer;
+        }
+
+        @Override
+        public boolean test(String name) {
+            int idx = name.lastIndexOf(SUFFIX);
+            String className = name.substring(0, idx).replace("/", ".");
+            if (className.contains(ValueResolverGenerator.NESTED_SEPARATOR)) {
+                className = className.replace(ValueResolverGenerator.NESTED_SEPARATOR, "$");
+            }
+            className = additionalClassNameSanitizer.apply(className);
+            return applicationArchivesBuildItem.getRootArchive().getIndex()
+                    .getClassByName(DotName.createSimple(className)) != null;
+        }
+    }
 }

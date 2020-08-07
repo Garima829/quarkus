@@ -1,0 +1,13 @@
+---
+name: commandmode-example
+ref: commandmode
+type: example
+fallback: true
+language:
+  base:
+    data:
+      greeting:
+        message: "hello"
+        default-name: "commando"
+    dependencies:
+      - io.quarkus:quarkus-arc

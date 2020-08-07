@@ -283,7 +283,7 @@ public class BeanInfo implements InjectionTargetInfo {
             return getLifecycleInterceptors(InterceptionType.PRE_DESTROY).isEmpty()
                     && Beans.getCallbacks(target.get().asClass(), DotNames.PRE_DESTROY, beanDeployment.getIndex()).isEmpty();
         } else {
-            return disposer == null;
+            return disposer == null && destroyerConsumer == null;
         }
     }
 
@@ -495,7 +495,7 @@ public class BeanInfo implements InjectionTargetInfo {
 
     @Override
     public int hashCode() {
-        return Objects.hash(identifier);
+        return identifier.hashCode();
     }
 
     @Override

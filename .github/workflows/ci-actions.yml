@@ -10,7 +10,9 @@ on:
       - 'CONTRIBUTING.md'
       - 'ADOPTERS.md'
       - 'TROUBLESHOOTING.md'
+      - 'SECURITY.md'
       - 'MAINTAINERS.adoc'
+      - 'DECISIONS.adoc'
       - 'LICENSE.txt'
       - 'dco.txt'
       - '.github/ISSUE_TEMPLATE/**'
@@ -26,6 +28,9 @@ on:
       - 'CONTRIBUTING.md'
       - 'ADOPTERS.md'
       - 'TROUBLESHOOTING.md'
+      - 'SECURITY.md'
+      - 'DECISIONS.adoc'
+      - 'MAINTAINERS.adoc'
       - 'LICENSE.txt'
       - 'dco.txt'
       - '.github/ISSUE_TEMPLATE/**'
@@ -80,7 +85,7 @@ jobs:
         with:
           path: ~/.m2/repository
           # Improves the reusability of the cache to limit key changes
-          key: q2maven-${{ hashFiles('bom/runtime/pom.xml') }}
+          key: q2maven-${{ hashFiles('bom/application/pom.xml') }}
           restore-keys: ${{ env.COMPUTED_RESTORE_KEY }}
           restore-only: ${{ github.event_name == 'pull_request' }}
       - name: Build
@@ -94,6 +99,9 @@ jobs:
         with:
           name: maven-repo
           path: maven-repo.tgz
+      - name: Delete Local Artifacts From Cache
+        shell: bash
+        run: rm -r ~/.m2/repository/io/quarkus
 
   linux-jvm-tests:
     name: JDK ${{matrix.java.name}} JVM Tests
@@ -400,7 +408,7 @@ jobs:
       max-parallel: 8
       fail-fast: false
       matrix:
-        category: [Main, Data1, Data2, Data3, Data4, Data5, Security1, Security2, Security3, Amazon, Messaging, Cache, HTTP, Misc1, Misc2, Misc3, Misc4, Spring, gRPC]
+        category: [Main, Data1, Data2, Data3, Data4, Data5, Data6, Security1, Security2, Security3, Amazon, Messaging, Cache, HTTP, Misc1, Misc2, Misc3, Misc4, Spring, gRPC]
         include:
           - category: Main
             postgres: "true"
@@ -511,12 +519,13 @@ jobs:
               infinispan-client
               cache
           - category: HTTP
-            timeout: 55
+            timeout: 60
             test-modules: >
               resteasy-jackson
               resteasy-mutiny
               vertx
               vertx-http
+              vertx-web
               vertx-graphql
               virtual-http
               rest-client
